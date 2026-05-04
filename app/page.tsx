@@ -332,6 +332,10 @@ export default function Home() {
   const [tagReservaSelecionada, setTagReservaSelecionada] = useState("");
   const [observacaoAdminParada, setObservacaoAdminParada] = useState("");
 
+  const [itemChecklistNumero, setItemChecklistNumero] = useState("");
+  const [itemChecklistDescricao, setItemChecklistDescricao] = useState("");
+  const [itemChecklistEditando, setItemChecklistEditando] = useState<number | null>(null);
+
   const perfil: Perfil = perfilUsuario?.perfil || "OPERADOR";
   const isAdmin = perfil === "ADMIN";
 
@@ -967,6 +971,81 @@ export default function Home() {
     }
   }
 
+  function limparFormularioItemChecklist() {
+    setItemChecklistNumero("");
+    setItemChecklistDescricao("");
+    setItemChecklistEditando(null);
+  }
+
+  function editarItemChecklist(item: ChecklistItemPadrao) {
+    setItemChecklistNumero(String(item.numero));
+    setItemChecklistDescricao(item.descricao);
+    setItemChecklistEditando(item.numero);
+    setMensagem("");
+  }
+
+  async function salvarItemChecklist() {
+    setMensagem("");
+
+    if (!isAdmin) return setMensagem("Somente Admin pode configurar o checklist.");
+
+    const numero = Number(itemChecklistNumero);
+    const descricao = itemChecklistDescricao.trim();
+
+    if (!Number.isInteger(numero) || numero <= 0) {
+      return setMensagem("Informe um número válido para o item.");
+    }
+
+    if (!descricao) {
+      return setMensagem("Informe a descrição do item.");
+    }
+
+    try {
+      setCarregando(true);
+
+      await supabaseRequest<ChecklistItemPadrao[]>("checklist_itens_padrao?on_conflict=numero", {
+        method: "POST",
+        headers: { Prefer: "resolution=merge-duplicates,return=representation" },
+        body: JSON.stringify({
+          numero,
+          descricao,
+          ativo: true,
+        }),
+      });
+
+      await carregarDados();
+      limparFormularioItemChecklist();
+      setMensagem(`Item ${numero} salvo no checklist.`);
+    } catch (err: any) {
+      setMensagem(`Erro ao salvar item do checklist: ${err.message || err}`);
+    } finally {
+      setCarregando(false);
+    }
+  }
+
+  async function alterarAtivoItemChecklist(item: ChecklistItemPadrao, ativo: boolean) {
+    setMensagem("");
+
+    if (!isAdmin) return setMensagem("Somente Admin pode configurar o checklist.");
+
+    try {
+      setCarregando(true);
+
+      await supabaseRequest<ChecklistItemPadrao[]>(`checklist_itens_padrao?numero=eq.${item.numero}`, {
+        method: "PATCH",
+        headers: { Prefer: "return=representation" },
+        body: JSON.stringify({ ativo }),
+      });
+
+      await carregarDados();
+      setMensagem(`Item ${item.numero} ${ativo ? "reativado" : "desativado"}.`);
+    } catch (err: any) {
+      setMensagem(`Erro ao alterar item do checklist: ${err.message || err}`);
+    } finally {
+      setCarregando(false);
+    }
+  }
+
   function exportarResumoCSV() {
     const cabecalho = ["DATA", "HORA", "OPERADOR", "TAG", "EQUIPAMENTO", "MODELO", "AREA", "SITUACAO", "RESULTADO", "HORIMETRO", "OBSERVACAO", "FOTO_EVIDENCIA", "FOTO_HORIMETRO"];
     const linhas = checklists.map((r) => [
@@ -1345,6 +1424,64 @@ export default function Home() {
                   )}
                 </div>
               ))}
+            </section>
+
+            <section style={styles.box}>
+              <h2 style={styles.boxTitulo}>Configuração do Checklist</h2>
+              <p style={styles.textoApoio}>
+                Use esta área para adicionar, editar, ativar ou retirar itens do checklist diário. 
+                Desativar é melhor do que apagar, porque preserva o histórico dos checklists antigos.
+              </p>
+
+              <div style={isMobile ? styles.gridMobile : styles.grid2}>
+                <Campo label="Número do item">
+                  <input
+                    value={itemChecklistNumero}
+                    onChange={(e) => setItemChecklistNumero(e.target.value.replace(/\D/g, ""))}
+                    placeholder="Ex.: 16"
+                    style={styles.input}
+                  />
+                </Campo>
+
+                <Campo label={itemChecklistEditando ? `Editando item ${itemChecklistEditando}` : "Descrição do item"}>
+                  <input
+                    value={itemChecklistDescricao}
+                    onChange={(e) => setItemChecklistDescricao(e.target.value)}
+                    placeholder="Ex.: Verificar carregador de bateria"
+                    style={styles.input}
+                  />
+                </Campo>
+              </div>
+
+              <div style={styles.botoesLinha}>
+                <button onClick={salvarItemChecklist} style={styles.botaoVerde}>
+                  {itemChecklistEditando ? "Salvar alteração do item" : "Adicionar item"}
+                </button>
+                <button onClick={limparFormularioItemChecklist} style={styles.botaoCinza}>
+                  Limpar
+                </button>
+              </div>
+
+              <div style={styles.tabelaEquipamentos}>
+                {[...itensPadrao].sort((a, b) => a.numero - b.numero).map((item) => (
+                  <div key={item.numero} style={isMobile ? styles.linhaEquipamentoMobile : styles.linhaEquipamento}>
+                    <div>
+                      <strong>{item.numero}. {item.descricao}</strong><br />
+                      <span style={item.ativo === false ? styles.badgeOpcional : styles.badgeObrigatorio}>
+                        {item.ativo === false ? "Inativo / retirado" : "Ativo"}
+                      </span>
+                    </div>
+                    <div style={styles.botoesLinha}>
+                      <button onClick={() => editarItemChecklist(item)} style={styles.botaoCinza}>Editar</button>
+                      {item.ativo === false ? (
+                        <button onClick={() => alterarAtivoItemChecklist(item, true)} style={styles.botaoVerde}>Reativar</button>
+                      ) : (
+                        <button onClick={() => alterarAtivoItemChecklist(item, false)} style={styles.botaoPerigo}>Retirar</button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </section>
 
             <section style={styles.box}>
