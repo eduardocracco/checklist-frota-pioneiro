@@ -549,9 +549,10 @@ export default function Home() {
       setSession(data.session);
       setUser(data.user);
       setAutenticado(true);
-    } catch (err: any) {
-      setMensagem(`Erro no login: ${err.message || err}`);
-    } finally { setCarregando(false); }
+      } catch (err: any) {
+    setMensagem(`Erro no login: ${err.message || err}`);
+  } finally {
+    setCarregando(false);
   }
 
   async function criarConta() {
@@ -580,7 +581,7 @@ export default function Home() {
       setCadNome(""); setCadUsuario(""); setCadEmailRecuperacao(""); setCadSenha(""); setCadSenha2("");
       setTelaLogin("ENTRAR");
       setMensagem("Conta criada como OPERADOR. Agora entre com usuário e senha.");
-    } catch (err: any) {
+  } catch (err: any) {
       setMensagem(`Erro ao criar conta: ${err.message || err}`);
     } finally { setCarregando(false); }
   }
