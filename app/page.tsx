@@ -7,7 +7,7 @@ import type { Session, User } from "@supabase/supabase-js";
 
 const SUPABASE_URL = "https://wndajcdtcfsuorvjqtbh.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InduZGFqY2R0Y2ZzdW9ydmpxdGJoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc1NzAwMDgsImV4cCI6MjA5MzE0NjAwOH0.Sybmebm4eDuGJXIDZG6YZitycGu-oEwBBmsgU3Hr_dI";
-const DOMINIO_LOGIN_INTERNO = "pioneiro.local";
+const DOMINIO_LOGIN_INTERNO = "pioneirobaterias.com.br";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
