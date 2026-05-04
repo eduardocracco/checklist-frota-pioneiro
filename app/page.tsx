@@ -9,16 +9,27 @@ const SUPABASE_URL = "https://wndajcdtcfsuorvjqtbh.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InduZGFqY2R0Y2ZzdW9ydmpxdGJoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc1NzAwMDgsImV4cCI6MjA5MzE0NjAwOH0.Sybmebm4eDuGJXIDZG6YZitycGu-oEwBBmsgU3Hr_dI";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+const DOMINIO_LOGIN_INTERNO = "pioneiro.local";
 
-type PerfilTipo = "OPERADOR" | "ADMIN";
+type Perfil = "OPERADOR" | "ADMIN";
 type StatusItem = "OK" | "NÃO OK" | "N/A" | "";
 
 type PerfilUsuario = {
   user_id: string;
   nome: string;
-  email: string;
-  perfil: PerfilTipo;
+  usuario_login: string;
+  email_auth: string;
+  email_recuperacao?: string;
+  perfil: Perfil;
   ativo: boolean;
+};
+
+type UsuarioLogin = {
+  usuario_login: string;
+  email_auth: string;
+  email_recuperacao?: string;
+  nome?: string;
+  ativo?: boolean;
 };
 
 type ParadaManutencao = {
@@ -34,6 +45,7 @@ type ParadaManutencao = {
   afeta_operacao: boolean;
   status: "AGUARDANDO_RESERVA" | "RESERVA_DEFINIDA" | "EM_MANUTENCAO" | "FINALIZADA";
   tag_reserva?: string;
+  equipamento_reserva_id?: string | null;
   observacao_admin?: string;
   data_fim?: string | null;
   hora_fim?: string | null;
@@ -55,8 +67,8 @@ type Equipamento = {
   email_supervisor?: string;
   whatsapp_supervisor?: string;
   origem?: string;
-  status_operacional?: string;
-  tag_substituindo?: string;
+  status_operacional?: "DISPONIVEL" | "EM_OPERACAO" | "EM_MANUTENCAO" | "RESERVA" | "INATIVO";
+  tag_substituindo?: string | null;
   parada_manutencao_id?: string | null;
 };
 
@@ -161,6 +173,19 @@ function normalizar(texto: string) {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/\s+/g, "");
+}
+
+function normalizarUsuario(usuario: string) {
+  return usuario
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9._-]/g, "");
+}
+
+function usuarioParaEmailInterno(usuario: string) {
+  return `${normalizarUsuario(usuario)}@${DOMINIO_LOGIN_INTERNO}`;
 }
 
 function modeloChave(e: { modelo?: string; tipo_equipamento?: string }) {
@@ -283,8 +308,14 @@ export default function Home() {
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [perfilUsuario, setPerfilUsuario] = useState<PerfilUsuario | null>(null);
-  const [emailLogin, setEmailLogin] = useState("");
-  const [senhaLogin, setSenhaLogin] = useState("");
+  const [telaLogin, setTelaLogin] = useState<"ENTRAR" | "CRIAR" | "ESQUECI">("ENTRAR");
+  const [loginUsuario, setLoginUsuario] = useState("");
+  const [loginSenha, setLoginSenha] = useState("");
+  const [cadNome, setCadNome] = useState("");
+  const [cadUsuario, setCadUsuario] = useState("");
+  const [cadEmailRecuperacao, setCadEmailRecuperacao] = useState("");
+  const [cadSenha, setCadSenha] = useState("");
+  const [cadSenha2, setCadSenha2] = useState("");
   const [autenticado, setAutenticado] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
 
@@ -313,8 +344,8 @@ export default function Home() {
   const [confirmacaoOperador, setConfirmacaoOperador] = useState(false);
   const [fotoEvidencia, setFotoEvidencia] = useState("");
   const [fotoHorimetro, setFotoHorimetro] = useState("");
-  const [numeroOS, setNumeroOS] = useState("");
   const [avariaImpedeUso, setAvariaImpedeUso] = useState(false);
+  const [numeroOS, setNumeroOS] = useState("");
   const [afetaOperacao, setAfetaOperacao] = useState(false);
   const [tagReservaSelecionada, setTagReservaSelecionada] = useState("");
   const [observacaoAdminParada, setObservacaoAdminParada] = useState("");
@@ -323,7 +354,7 @@ export default function Home() {
   const [editandoTag, setEditandoTag] = useState("");
   const [filtroAdmin, setFiltroAdmin] = useState<"TODOS" | "AVARIAS" | "PENDENTES" | "CONCLUIDOS">("TODOS");
 
-  const perfil = perfilUsuario?.perfil || "OPERADOR";
+  const perfil: Perfil = perfilUsuario?.perfil || "OPERADOR";
   const isAdmin = perfil === "ADMIN";
 
   async function carregarDados() {
@@ -373,8 +404,12 @@ export default function Home() {
       setAutenticado(!!data.session?.user);
 
       if (data.session?.user) {
-        await carregarPerfil(data.session.user.id);
-        await carregarDados();
+        try {
+          await carregarPerfil(data.session.user.id);
+          await carregarDados();
+        } catch (err: any) {
+          setMensagem(`Erro ao carregar sessão: ${err.message || err}`);
+        }
       }
 
       setCarregando(false);
@@ -388,8 +423,12 @@ export default function Home() {
       setAutenticado(!!novaSession?.user);
 
       if (novaSession?.user) {
-        await carregarPerfil(novaSession.user.id);
-        await carregarDados();
+        try {
+          await carregarPerfil(novaSession.user.id);
+          await carregarDados();
+        } catch (err: any) {
+          setMensagem(`Erro ao carregar perfil: ${err.message || err}`);
+        }
       } else {
         setPerfilUsuario(null);
       }
@@ -488,40 +527,79 @@ export default function Home() {
   }, [checklists, respostasBanco, decisoesNA]);
 
   async function carregarPerfil(userId: string) {
-    const perfil = await supabaseRequest<PerfilUsuario[]>(`perfis_usuario?select=*&user_id=eq.${userId}&ativo=eq.true`);
-
-    if (!perfil.length) {
-      throw new Error("Usuário sem perfil ativo cadastrado em perfis_usuario.");
-    }
-
-    setPerfilUsuario(perfil[0]);
-    setOperador(perfil[0].nome || "");
+    const perfilEncontrado = await supabaseRequest<PerfilUsuario[]>(`perfis_usuario?select=*&user_id=eq.${userId}&ativo=eq.true`);
+    if (!perfilEncontrado.length) throw new Error("Usuário sem perfil ativo cadastrado.");
+    setPerfilUsuario(perfilEncontrado[0]);
+    setOperador(perfilEncontrado[0].nome || "");
   }
 
   async function entrarNoPerfil() {
     setMensagem("");
     setCarregando(true);
-
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: emailLogin,
-        password: senhaLogin,
-      });
-
+      const usuario = normalizarUsuario(loginUsuario);
+      if (!usuario) throw new Error("Informe o usuário.");
+      const mapa = await supabaseRequest<UsuarioLogin[]>(`usuarios_login?select=*&usuario_login=eq.${encodeURIComponent(usuario)}&ativo=eq.true`);
+      const emailAuth = mapa[0]?.email_auth || usuarioParaEmailInterno(usuario);
+      const { data, error } = await supabase.auth.signInWithPassword({ email: emailAuth, password: loginSenha });
       if (error) throw error;
       if (!data.user) throw new Error("Login não retornou usuário.");
-
       await carregarPerfil(data.user.id);
       await carregarDados();
-
       setSession(data.session);
       setUser(data.user);
       setAutenticado(true);
     } catch (err: any) {
       setMensagem(`Erro no login: ${err.message || err}`);
-    } finally {
-      setCarregando(false);
-    }
+    } finally { setCarregando(false); }
+  }
+
+  async function criarConta() {
+    setMensagem("");
+    setCarregando(true);
+    try {
+      const usuario = normalizarUsuario(cadUsuario);
+      if (!cadNome.trim()) throw new Error("Informe o nome completo.");
+      if (!usuario) throw new Error("Informe um usuário válido.");
+      if (!cadEmailRecuperacao.includes("@")) throw new Error("Informe um e-mail de recuperação válido.");
+      if (cadSenha.length < 6) throw new Error("A senha precisa ter pelo menos 6 caracteres.");
+      if (cadSenha !== cadSenha2) throw new Error("As senhas não conferem.");
+      const existentes = await supabaseRequest<UsuarioLogin[]>(`usuarios_login?select=usuario_login&usuario_login=eq.${encodeURIComponent(usuario)}`);
+      if (existentes.length) throw new Error("Este usuário já existe. Escolha outro.");
+      const emailAuth = usuarioParaEmailInterno(usuario);
+      const { data, error } = await supabase.auth.signUp({
+        email: emailAuth,
+        password: cadSenha,
+        options: { data: { nome: cadNome.trim(), usuario_login: usuario, email_recuperacao: cadEmailRecuperacao.trim() } },
+      });
+      if (error) throw error;
+      if (!data.user) throw new Error("Cadastro não retornou usuário.");
+      await supabaseRequest<UsuarioLogin[]>("usuarios_login", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ usuario_login: usuario, email_auth: emailAuth, email_recuperacao: cadEmailRecuperacao.trim(), nome: cadNome.trim(), ativo: true }) });
+      await supabaseRequest<PerfilUsuario[]>("perfis_usuario", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: data.user.id, nome: cadNome.trim(), usuario_login: usuario, email_auth: emailAuth, email_recuperacao: cadEmailRecuperacao.trim(), email: emailAuth, perfil: "OPERADOR", ativo: true }) });
+      setLoginUsuario(usuario);
+      setCadNome(""); setCadUsuario(""); setCadEmailRecuperacao(""); setCadSenha(""); setCadSenha2("");
+      setTelaLogin("ENTRAR");
+      setMensagem("Conta criada como OPERADOR. Agora entre com usuário e senha.");
+    } catch (err: any) {
+      setMensagem(`Erro ao criar conta: ${err.message || err}`);
+    } finally { setCarregando(false); }
+  }
+
+  async function recuperarSenha() {
+    setMensagem("");
+    setCarregando(true);
+    try {
+      const usuario = normalizarUsuario(loginUsuario || cadUsuario);
+      if (!usuario) throw new Error("Informe o usuário.");
+      const mapa = await supabaseRequest<UsuarioLogin[]>(`usuarios_login?select=*&usuario_login=eq.${encodeURIComponent(usuario)}&ativo=eq.true`);
+      if (!mapa.length) throw new Error("Usuário não encontrado.");
+      const { error } = await supabase.auth.resetPasswordForEmail(mapa[0].email_auth, { redirectTo: window.location.origin });
+      if (error) throw error;
+      setMensagem("Se o SMTP estiver configurado, o link de redefinição será enviado.");
+      setTelaLogin("ENTRAR");
+    } catch (err: any) {
+      setMensagem(`Erro ao recuperar senha: ${err.message || err}`);
+    } finally { setCarregando(false); }
   }
 
   async function sair() {
@@ -542,8 +620,8 @@ export default function Home() {
     setConfirmacaoOperador(false);
     setFotoEvidencia("");
     setFotoHorimetro("");
-    setNumeroOS("");
     setAvariaImpedeUso(false);
+    setNumeroOS("");
     setAfetaOperacao(false);
   }
 
@@ -697,21 +775,8 @@ export default function Home() {
           afeta_operacao: afetaOperacao,
           status: afetaOperacao ? "AGUARDANDO_RESERVA" : "EM_MANUTENCAO",
         };
-
-        await supabaseRequest<ParadaManutencao[]>("paradas_manutencao", {
-          method: "POST",
-          headers: { Prefer: "return=representation" },
-          body: JSON.stringify(paradaPayload),
-        });
-
-        await supabaseRequest<Equipamento[]>(`equipamentos?tag=eq.${encodeURIComponent(equipamentoSelecionado.tag)}`, {
-          method: "PATCH",
-          headers: { Prefer: "return=representation" },
-          body: JSON.stringify({
-            checklist_obrigatorio: false,
-            status_operacional: "EM_MANUTENCAO",
-          }),
-        });
+        await supabaseRequest<ParadaManutencao[]>("paradas_manutencao", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify(paradaPayload) });
+        await supabaseRequest<Equipamento[]>(`equipamentos?tag=eq.${encodeURIComponent(equipamentoSelecionado.tag)}`, { method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify({ checklist_obrigatorio: false, status_operacional: "EM_MANUTENCAO" }) });
       }
 
       await carregarDados();
@@ -798,99 +863,35 @@ export default function Home() {
     }
   }
 
-
   async function definirReserva(parada: ParadaManutencao) {
     if (!isAdmin) return setMensagem("Somente Admin pode definir reserva.");
     if (!tagReservaSelecionada) return setMensagem("Selecione uma TAG reserva.");
-
     try {
       setCarregando(true);
-
       const reserva = equipamentos.find((e) => e.tag === tagReservaSelecionada);
       if (!reserva) throw new Error("Reserva não encontrada.");
-
-      await supabaseRequest<ParadaManutencao[]>(`paradas_manutencao?id=eq.${parada.id}`, {
-        method: "PATCH",
-        headers: { Prefer: "return=representation" },
-        body: JSON.stringify({
-          status: "RESERVA_DEFINIDA",
-          tag_reserva: reserva.tag,
-          equipamento_reserva_id: reserva.id || null,
-          observacao_admin: observacaoAdminParada,
-        }),
-      });
-
-      await supabaseRequest<Equipamento[]>(`equipamentos?tag=eq.${encodeURIComponent(reserva.tag)}`, {
-        method: "PATCH",
-        headers: { Prefer: "return=representation" },
-        body: JSON.stringify({
-          status_operacional: "RESERVA",
-          tag_substituindo: parada.tag_original,
-        }),
-      });
-
+      await supabaseRequest<ParadaManutencao[]>(`paradas_manutencao?id=eq.${parada.id}`, { method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify({ status: "RESERVA_DEFINIDA", tag_reserva: reserva.tag, equipamento_reserva_id: reserva.id || null, observacao_admin: observacaoAdminParada }) });
+      await supabaseRequest<Equipamento[]>(`equipamentos?tag=eq.${encodeURIComponent(reserva.tag)}`, { method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify({ status_operacional: "RESERVA", tag_substituindo: parada.tag_original }) });
       await carregarDados();
-      setTagReservaSelecionada("");
-      setObservacaoAdminParada("");
+      setTagReservaSelecionada(""); setObservacaoAdminParada("");
       setMensagem(`Reserva ${reserva.tag} definida para substituir ${parada.tag_original}.`);
-    } catch (err: any) {
-      setMensagem(`Erro ao definir reserva: ${err.message || err}`);
-    } finally {
-      setCarregando(false);
-    }
+    } catch (err: any) { setMensagem(`Erro ao definir reserva: ${err.message || err}`); } finally { setCarregando(false); }
   }
 
   async function finalizarParada(parada: ParadaManutencao) {
     if (!isAdmin) return setMensagem("Somente Admin pode finalizar parada.");
-
     try {
       setCarregando(true);
-
       const inicio = new Date(`${parada.data_inicio}T${parada.hora_inicio || "00:00:00"}`);
       const agora = new Date();
       const horas = Math.max(0, (agora.getTime() - inicio.getTime()) / 3600000);
-
-      await supabaseRequest<ParadaManutencao[]>(`paradas_manutencao?id=eq.${parada.id}`, {
-        method: "PATCH",
-        headers: { Prefer: "return=representation" },
-        body: JSON.stringify({
-          status: "FINALIZADA",
-          data_fim: hojeISO(),
-          hora_fim: agora.toTimeString().slice(0, 8),
-          horas_parado: horas,
-          observacao_admin: observacaoAdminParada,
-        }),
-      });
-
-      await supabaseRequest<Equipamento[]>(`equipamentos?tag=eq.${encodeURIComponent(parada.tag_original)}`, {
-        method: "PATCH",
-        headers: { Prefer: "return=representation" },
-        body: JSON.stringify({
-          checklist_obrigatorio: true,
-          status_operacional: "DISPONIVEL",
-          tag_substituindo: null,
-        }),
-      });
-
-      if (parada.tag_reserva) {
-        await supabaseRequest<Equipamento[]>(`equipamentos?tag=eq.${encodeURIComponent(parada.tag_reserva)}`, {
-          method: "PATCH",
-          headers: { Prefer: "return=representation" },
-          body: JSON.stringify({
-            status_operacional: "DISPONIVEL",
-            tag_substituindo: null,
-          }),
-        });
-      }
-
+      await supabaseRequest<ParadaManutencao[]>(`paradas_manutencao?id=eq.${parada.id}`, { method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify({ status: "FINALIZADA", data_fim: hojeISO(), hora_fim: agora.toTimeString().slice(0, 8), horas_parado: horas, observacao_admin: observacaoAdminParada }) });
+      await supabaseRequest<Equipamento[]>(`equipamentos?tag=eq.${encodeURIComponent(parada.tag_original)}`, { method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify({ checklist_obrigatorio: true, status_operacional: "DISPONIVEL", tag_substituindo: null }) });
+      if (parada.tag_reserva) await supabaseRequest<Equipamento[]>(`equipamentos?tag=eq.${encodeURIComponent(parada.tag_reserva)}`, { method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify({ status_operacional: "DISPONIVEL", tag_substituindo: null }) });
       await carregarDados();
       setObservacaoAdminParada("");
       setMensagem(`Parada da ${parada.tag_original} finalizada. Tempo parado: ${horas.toFixed(1)} h.`);
-    } catch (err: any) {
-      setMensagem(`Erro ao finalizar parada: ${err.message || err}`);
-    } finally {
-      setCarregando(false);
-    }
+    } catch (err: any) { setMensagem(`Erro ao finalizar parada: ${err.message || err}`); } finally { setCarregando(false); }
   }
 
   function exportarResumoCSV() {
@@ -932,24 +933,34 @@ export default function Home() {
             <img src="/logo.png" alt="Logo Baterias Pioneiro" style={styles.logoLogin} onError={(e) => { e.currentTarget.style.display = "none"; }} />
             <div>
               <h1 style={{ margin: 0 }}>Checklist Diário</h1>
-              <p>Entre com e-mail e senha.</p>
+              <p>{telaLogin === "ENTRAR" ? "Entre com usuário e senha." : telaLogin === "CRIAR" ? "Crie sua conta de operador." : "Informe seu usuário para recuperar senha."}</p>
             </div>
           </div>
 
-          <Campo label="E-mail">
-            <input value={emailLogin} onChange={(e) => setEmailLogin(e.target.value)} type="email" placeholder="usuario@empresa.com" style={styles.input} />
-          </Campo>
+          {telaLogin === "ENTRAR" && (<>
+            <Campo label="Usuário"><input value={loginUsuario} onChange={(e) => setLoginUsuario(e.target.value)} placeholder="Ex.: eduardo.m" style={styles.input} /></Campo>
+            <Campo label="Senha"><input value={loginSenha} onChange={(e) => setLoginSenha(e.target.value)} type="password" placeholder="Digite sua senha" style={styles.input} onKeyDown={(e) => { if (e.key === "Enter") entrarNoPerfil(); }} /></Campo>
+            <button onClick={entrarNoPerfil} style={styles.botaoPreto}>Entrar</button>
+            <div style={styles.botoesLinha}><button onClick={() => { setTelaLogin("CRIAR"); setMensagem(""); }} style={styles.botaoCinza}>Criar conta</button><button onClick={() => { setTelaLogin("ESQUECI"); setMensagem(""); }} style={styles.botaoCinza}>Esqueci minha senha</button></div>
+          </>)}
 
-          <Campo label="Senha">
-            <input value={senhaLogin} onChange={(e) => setSenhaLogin(e.target.value)} type="password" placeholder="Digite sua senha" style={styles.input} onKeyDown={(e) => { if (e.key === "Enter") entrarNoPerfil(); }} />
-          </Campo>
+          {telaLogin === "CRIAR" && (<>
+            <Campo label="Nome completo"><input value={cadNome} onChange={(e) => setCadNome(e.target.value)} placeholder="Nome completo" style={styles.input} /></Campo>
+            <Campo label="Usuário"><input value={cadUsuario} onChange={(e) => setCadUsuario(normalizarUsuario(e.target.value))} placeholder="Ex.: eduardo.m" style={styles.input} /></Campo>
+            <Campo label="E-mail de recuperação"><input value={cadEmailRecuperacao} onChange={(e) => setCadEmailRecuperacao(e.target.value)} type="email" placeholder="email@bateriaspioneiro.com.br" style={styles.input} /></Campo>
+            <Campo label="Senha"><input value={cadSenha} onChange={(e) => setCadSenha(e.target.value)} type="password" placeholder="Mínimo 6 caracteres" style={styles.input} /></Campo>
+            <Campo label="Confirmar senha"><input value={cadSenha2} onChange={(e) => setCadSenha2(e.target.value)} type="password" placeholder="Repita a senha" style={styles.input} /></Campo>
+            <button onClick={criarConta} style={styles.botaoPreto}>Criar conta como operador</button>
+            <div style={styles.botoesLinha}><button onClick={() => { setTelaLogin("ENTRAR"); setMensagem(""); }} style={styles.botaoCinza}>Voltar para login</button></div>
+          </>)}
 
-          <button onClick={entrarNoPerfil} style={styles.botaoPreto}>Entrar</button>
+          {telaLogin === "ESQUECI" && (<>
+            <Campo label="Usuário"><input value={loginUsuario} onChange={(e) => setLoginUsuario(e.target.value)} placeholder="Ex.: eduardo.m" style={styles.input} /></Campo>
+            <button onClick={recuperarSenha} style={styles.botaoPreto}>Enviar recuperação</button>
+            <div style={styles.botoesLinha}><button onClick={() => { setTelaLogin("ENTRAR"); setMensagem(""); }} style={styles.botaoCinza}>Voltar para login</button></div>
+          </>)}
 
-          <div style={styles.loginDica}>
-            Login real via Supabase Auth. O perfil vem da tabela perfis_usuario.
-          </div>
-
+          <div style={styles.loginDica}>Use somente o usuário curto, por exemplo: eduardo ou eduardo.m.</div>
           {carregando && <p style={styles.msg}>Carregando...</p>}
           {mensagem && <p style={styles.msgErro}>{mensagem}</p>}
         </div>
@@ -966,7 +977,7 @@ export default function Home() {
             <div>
               <div style={styles.empresaNome}>Baterias Pioneiro</div>
               <h1 style={styles.titulo}>Checklist Diário de Empilhadeiras e Paleteiras</h1>
-              <p style={styles.subtitulo}>Login real Supabase. Perfil: {perfil} | Usuário: {perfilUsuario.nome}</p>
+              <p style={styles.subtitulo}>Login: {perfilUsuario.usuario_login} | Perfil: {perfil}</p>
             </div>
           </div>
           <div style={styles.perfilBox}>
@@ -1058,35 +1069,23 @@ export default function Home() {
               </Campo>
             </section>
 
-            {(situacaoEquipamento === "EM MANUTENÇÃO" || avariaImpedeUso) && (
-              <section style={styles.boxInternoDestaque}>
-                <h3 style={styles.subtituloSecao}>Avaria grave / abertura de OS</h3>
-                <p style={styles.textoApoio}>
-                  Se a máquina não pode operar, informe a OS. O equipamento sairá da obrigatoriedade do checklist até ser liberado pela manutenção.
-                </p>
-                <div style={isMobile ? styles.gridMobile : styles.grid2}>
-                  <Campo label="Número da OS">
-                    <input value={numeroOS} onChange={(e) => setNumeroOS(e.target.value)} placeholder="Ex.: OS 12345" style={styles.input} />
-                  </Campo>
-                  <label style={styles.checkLabel}>
-                    <input type="checkbox" checked={afetaOperacao} onChange={(e) => setAfetaOperacao(e.target.checked)} />
-                    Afeta completamente a operação e precisa avaliar equipamento reserva
-                  </label>
-                </div>
-              </section>
-            )}
-
             <div style={styles.confirmacaoBox}>
               <label style={styles.checkLabel}>
                 <input type="checkbox" checked={avariaImpedeUso} onChange={(e) => setAvariaImpedeUso(e.target.checked)} />
                 A avaria impede o funcionamento completo da máquina
               </label>
-              {avariaImpedeUso && (
-                <p style={styles.textoApoio}>
-                  Orientação: abrir OS e encaminhar a máquina ao setor de manutenção.
-                </p>
-              )}
+              {avariaImpedeUso && <p style={styles.textoApoio}>Orientação: abrir OS e encaminhar a máquina ao setor de manutenção.</p>}
             </div>
+
+            {(situacaoEquipamento === "EM MANUTENÇÃO" || avariaImpedeUso) && (
+              <section style={styles.boxInternoDestaque}>
+                <h3 style={styles.subtituloSecao}>Abertura de OS / máquina parada</h3>
+                <div style={isMobile ? styles.gridMobile : styles.grid2}>
+                  <Campo label="Número da OS"><input value={numeroOS} onChange={(e) => setNumeroOS(e.target.value)} placeholder="Ex.: OS 12345" style={styles.input} /></Campo>
+                  <label style={styles.checkLabel}><input type="checkbox" checked={afetaOperacao} onChange={(e) => setAfetaOperacao(e.target.checked)} />Afeta completamente a operação e precisa avaliar equipamento reserva</label>
+                </div>
+              </section>
+            )}
 
             <div style={styles.checklistLista}>
               {respostas.map((r) => (
@@ -1243,33 +1242,17 @@ export default function Home() {
               {paradasManutencao.map((p) => {
                 const inicio = new Date(`${p.data_inicio}T${p.hora_inicio || "00:00:00"}`);
                 const horas = Math.max(0, (Date.now() - inicio.getTime()) / 3600000);
-
                 return (
                   <div key={p.id} style={styles.alertaItem}>
                     <strong>{p.tag_original} - OS {p.numero_os}</strong><br />
-                    Status: {p.status}<br />
-                    Motivo: {p.motivo}<br />
-                    Operador: {p.operador_nome}<br />
-                    Afeta operação: {p.afeta_operacao ? "SIM" : "NÃO"}<br />
-                    Tempo parado atual: {horas.toFixed(1)} h<br />
+                    Status: {p.status}<br />Motivo: {p.motivo}<br />Operador: {p.operador_nome}<br />Afeta operação: {p.afeta_operacao ? "SIM" : "NÃO"}<br />Tempo parado atual: {horas.toFixed(1)} h<br />
                     {p.tag_reserva && <>Reserva definida: {p.tag_reserva}<br /></>}
-
-                    {p.afeta_operacao && p.status === "AGUARDANDO_RESERVA" && (
-                      <div style={styles.botoesLinha}>
-                        <select value={tagReservaSelecionada} onChange={(e) => setTagReservaSelecionada(e.target.value)} style={styles.input}>
-                          <option value="">Selecionar equipamento reserva</option>
-                          {equipamentosReservaDisponiveis.map((e) => (
-                            <option key={e.tag} value={e.tag}>{e.tag} - {e.tipo_equipamento} - {e.area}</option>
-                          ))}
-                        </select>
-                        <input value={observacaoAdminParada} onChange={(e) => setObservacaoAdminParada(e.target.value)} placeholder="Observação do analista" style={styles.input} />
-                        <button onClick={() => definirReserva(p)} style={styles.botaoVerde}>Definir reserva</button>
-                      </div>
-                    )}
-
-                    <div style={styles.botoesLinha}>
-                      <button onClick={() => finalizarParada(p)} style={styles.botaoPreto}>Finalizar manutenção / reativar checklist</button>
-                    </div>
+                    {p.afeta_operacao && p.status === "AGUARDANDO_RESERVA" && (<div style={styles.botoesLinha}>
+                      <select value={tagReservaSelecionada} onChange={(e) => setTagReservaSelecionada(e.target.value)} style={styles.input}><option value="">Selecionar equipamento reserva</option>{equipamentosReservaDisponiveis.map((e) => <option key={e.tag} value={e.tag}>{e.tag} - {e.tipo_equipamento} - {e.area}</option>)}</select>
+                      <input value={observacaoAdminParada} onChange={(e) => setObservacaoAdminParada(e.target.value)} placeholder="Observação do analista" style={styles.input} />
+                      <button onClick={() => definirReserva(p)} style={styles.botaoVerde}>Definir reserva</button>
+                    </div>)}
+                    <div style={styles.botoesLinha}><button onClick={() => finalizarParada(p)} style={styles.botaoPreto}>Finalizar manutenção / reativar checklist</button></div>
                   </div>
                 );
               })}
