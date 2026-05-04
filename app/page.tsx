@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type React from "react";
 import { createClient } from "@supabase/supabase-js";
-import type { Session, User } from "@supabase/supabase-js";
 
 const SUPABASE_URL = "https://wndajcdtcfsuorvjqtbh.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InduZGFqY2R0Y2ZzdW9ydmpxdGJoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc1NzAwMDgsImV4cCI6MjA5MzE0NjAwOH0.Sybmebm4eDuGJXIDZG6YZitycGu-oEwBBmsgU3Hr_dI";
@@ -13,14 +12,13 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 type Perfil = "ADMIN" | "OPERADOR";
 type StatusItem = "OK" | "NÃO OK" | "N/A" | "";
-type TelaLogin = "ENTRAR" | "CRIAR" | "ESQUECI";
+type TelaLogin = "ENTRAR" | "CRIAR";
 
 type PerfilUsuario = {
-  user_id: string;
+  id?: string;
   nome: string;
-  usuario_login: string;
-  email_auth: string;
-  email_recuperacao?: string;
+  usuario: string;
+  senha: string;
   perfil: Perfil;
   ativo: boolean;
 };
@@ -241,14 +239,11 @@ function extensaoPorMime(mime: string) {
 }
 
 async function supabaseRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const { data: sessionData } = await supabase.auth.getSession();
-  const token = sessionData.session?.access_token || SUPABASE_KEY;
-
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     ...options,
     headers: {
       apikey: SUPABASE_KEY,
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${SUPABASE_KEY}`,
       "Content-Type": "application/json",
       ...(options.headers || {}),
     },
@@ -281,8 +276,6 @@ async function enviarFotoStorage(dataUrl: string, pasta: string, nomeBase: strin
 }
 
 export default function Home() {
-  const [session, setSession] = useState<Session | null>(null);
-  const [user, setUser] = useState<User | null>(null);
   const [perfilUsuario, setPerfilUsuario] = useState<PerfilUsuario | null>(null);
 
   const [telaLogin, setTelaLogin] = useState<TelaLogin>("ENTRAR");
@@ -336,6 +329,13 @@ export default function Home() {
   const [itemChecklistDescricao, setItemChecklistDescricao] = useState("");
   const [itemChecklistEditando, setItemChecklistEditando] = useState<number | null>(null);
   const [modeloConfigSelecionado, setModeloConfigSelecionado] = useState("");
+  const [usuariosApp, setUsuariosApp] = useState<PerfilUsuario[]>([]);
+  const [usuarioAdminNome, setUsuarioAdminNome] = useState("");
+  const [usuarioAdminLogin, setUsuarioAdminLogin] = useState("");
+  const [usuarioAdminSenha, setUsuarioAdminSenha] = useState("");
+  const [usuarioAdminPerfil, setUsuarioAdminPerfil] = useState<Perfil>("OPERADOR");
+  const [usuarioAdminAtivo, setUsuarioAdminAtivo] = useState(true);
+  const [usuarioAdminEditando, setUsuarioAdminEditando] = useState<string | null>(null);
 
   const perfil: Perfil = perfilUsuario?.perfil || "OPERADOR";
   const isAdmin = perfil === "ADMIN";
@@ -351,80 +351,44 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    async function iniciarSessao() {
+    function atualizarMobile() {
+      setIsMobile(window.innerWidth <= 820);
+    }
+
+    atualizarMobile();
+    window.addEventListener("resize", atualizarMobile);
+    return () => window.removeEventListener("resize", atualizarMobile);
+  }, []);
+
+  useEffect(() => {
+    async function iniciarLoginLocal() {
       setCarregando(true);
 
       try {
-        const { data } = await supabase.auth.getSession();
-        setSession(data.session);
-        setUser(data.session?.user || null);
+        const usuarioSalvo = localStorage.getItem("checklist_usuario_logado");
+        if (usuarioSalvo) {
+          const usuarios = await supabaseRequest<PerfilUsuario[]>(
+            `usuarios_app?select=*&usuario=eq.${encodeURIComponent(usuarioSalvo)}&ativo=eq.true`
+          );
 
-        if (data.session?.user) {
-          await carregarPerfil(data.session.user.id);
-          await carregarDados();
+          if (usuarios.length) {
+            setPerfilUsuario(usuarios[0]);
+            setOperador(usuarios[0].nome || "");
+            await carregarDados();
+          } else {
+            localStorage.removeItem("checklist_usuario_logado");
+          }
         }
       } catch (err: any) {
-        setMensagem(`Erro ao carregar sessão: ${err.message || err}`);
+        setMensagem(`Erro ao carregar usuário salvo: ${err.message || err}`);
+        localStorage.removeItem("checklist_usuario_logado");
       } finally {
         setCarregando(false);
       }
     }
 
-    iniciarSessao();
-
-    const { data: listener } = supabase.auth.onAuthStateChange(async (_event, novaSession) => {
-      setSession(novaSession);
-      setUser(novaSession?.user || null);
-
-      if (novaSession?.user) {
-        try {
-          setCarregando(true);
-          await carregarPerfil(novaSession.user.id);
-          await carregarDados();
-        } catch (err: any) {
-          setMensagem(`Erro ao carregar perfil: ${err.message || err}`);
-        } finally {
-          setCarregando(false);
-        }
-      } else {
-        setPerfilUsuario(null);
-      }
-    });
-
-    return () => listener.subscription.unsubscribe();
+    iniciarLoginLocal();
   }, []);
-
-  async function carregarPerfil(userId: string) {
-    const perfis = await supabaseRequest<PerfilUsuario[]>(
-      `perfis_usuario?select=*&user_id=eq.${userId}&ativo=eq.true`
-    );
-
-    if (!perfis.length) throw new Error("Usuário sem perfil ativo cadastrado.");
-    setPerfilUsuario(perfis[0]);
-    setOperador(perfis[0].nome || "");
-  }
-
-  async function carregarDados() {
-    setMensagem("");
-
-    const [eqs, itens, itensTodos, chks, resps, decs, pars] = await Promise.all([
-      supabaseRequest<Equipamento[]>("equipamentos?select=*&order=tag.asc"),
-      supabaseRequest<ChecklistItemPadrao[]>("checklist_itens_padrao?select=numero,descricao,ativo&ativo=eq.true&order=numero.asc"),
-      supabaseRequest<ChecklistItemPadrao[]>("checklist_itens_padrao?select=numero,descricao,ativo&order=numero.asc"),
-      supabaseRequest<ChecklistRegistro[]>("checklists?select=*&order=criado_em.desc&limit=1000"),
-      supabaseRequest<RespostaBanco[]>("checklist_respostas?select=*&order=item_numero.asc&limit=5000"),
-      supabaseRequest<DecisaoNA[]>("decisoes_na?select=*&order=criado_em.desc"),
-      supabaseRequest<ParadaManutencao[]>("paradas_manutencao?select=*&status=neq.FINALIZADA&order=criado_em.desc"),
-    ]);
-
-    setEquipamentos(eqs || []);
-    setItensPadrao(itens?.length ? itens : itensFallback);
-    setItensConfig(itensTodos?.length ? itensTodos : itensFallback);
-    setChecklists(chks || []);
-    setRespostasBanco(resps || []);
-    setDecisoesNA(decs || []);
-    setParadasManutencao(pars || []);
-  }
 
   async function entrarNoPerfil() {
     setMensagem("");
@@ -433,25 +397,26 @@ export default function Home() {
     try {
       const usuario = normalizarUsuario(loginUsuario);
       if (!usuario) throw new Error("Informe o usuário.");
+      if (!loginSenha) throw new Error("Informe a senha.");
 
-      const mapa = await supabaseRequest<any[]>(
-        `usuarios_login?select=*&usuario_login=eq.${encodeURIComponent(usuario)}&ativo=eq.true`
+      const usuarios = await supabaseRequest<PerfilUsuario[]>(
+        `usuarios_app?select=*&usuario=eq.${encodeURIComponent(usuario)}&ativo=eq.true`
       );
-      const emailAuth = mapa[0]?.email_auth || usuarioParaEmailInterno(usuario);
 
-      const { data: authData, error } = await supabase.auth.signInWithPassword({
-        email: emailAuth,
-        password: loginSenha,
-      });
+      if (!usuarios.length) throw new Error("Usuário não encontrado ou bloqueado.");
 
-      if (error) throw error;
-      if (!authData.user || !authData.session) throw new Error("Login não retornou sessão.");
+      const usuarioEncontrado = usuarios[0];
 
-      setSession(authData.session);
-      setUser(authData.user);
+      if (usuarioEncontrado.senha !== loginSenha) {
+        throw new Error("Senha incorreta.");
+      }
 
-      await carregarPerfil(authData.user.id);
+      setPerfilUsuario(usuarioEncontrado);
+      setOperador(usuarioEncontrado.nome || "");
+      localStorage.setItem("checklist_usuario_logado", usuarioEncontrado.usuario);
+
       await carregarDados();
+      setMensagem("");
     } catch (err: any) {
       setMensagem(`Erro no login: ${err.message || err}`);
     } finally {
@@ -470,53 +435,19 @@ export default function Home() {
       if (cadSenha.length < 6) throw new Error("A senha precisa ter pelo menos 6 caracteres.");
       if (cadSenha !== cadSenha2) throw new Error("As senhas não conferem.");
 
-      const existentes = await supabaseRequest<any[]>(
-        `usuarios_login?select=usuario_login&usuario_login=eq.${encodeURIComponent(usuario)}`
+      const existentes = await supabaseRequest<PerfilUsuario[]>(
+        `usuarios_app?select=usuario&usuario=eq.${encodeURIComponent(usuario)}`
       );
+
       if (existentes.length) throw new Error("Este usuário já existe.");
 
-      const emailAuth = usuarioParaEmailInterno(usuario);
-
-      const { data: cadastro, error } = await supabase.auth.signUp({
-        email: emailAuth,
-        password: cadSenha,
-        options: {
-          data: {
-            nome: cadNome.trim(),
-            usuario_login: usuario,
-          },
-        },
-      });
-
-      if (error) throw error;
-      if (!cadastro.user) throw new Error("Cadastro não retornou usuário.");
-
-      await supabaseRequest<any[]>("usuarios_login", {
+      await supabaseRequest<PerfilUsuario[]>("usuarios_app", {
         method: "POST",
         headers: { Prefer: "return=representation" },
         body: JSON.stringify({
-          usuario_login: usuario,
-          email_auth: emailAuth,
-          email_recuperacao: "",
           nome: cadNome.trim(),
-          ativo: true,
-        }),
-      });
-
-      if (!cadastro.session) {
-        throw new Error("Conta criada, mas precisa confirmação de e-mail. Desative confirmação de e-mail no Supabase para o piloto.");
-      }
-
-      await supabaseRequest<any[]>("perfis_usuario", {
-        method: "POST",
-        headers: { Prefer: "return=representation" },
-        body: JSON.stringify({
-          user_id: cadastro.user.id,
-          nome: cadNome.trim(),
-          usuario_login: usuario,
-          email_auth: emailAuth,
-          email_recuperacao: "",
-          email: emailAuth,
+          usuario,
+          senha: cadSenha,
           perfil: "OPERADOR",
           ativo: true,
         }),
@@ -524,12 +455,12 @@ export default function Home() {
 
       setLoginUsuario(usuario);
       setLoginSenha("");
-      setTelaLogin("ENTRAR");
-      setMensagem("Conta criada como OPERADOR. Entre com usuário e senha.");
       setCadNome("");
       setCadUsuario("");
       setCadSenha("");
       setCadSenha2("");
+      setTelaLogin("ENTRAR");
+      setMensagem("Conta criada como OPERADOR. Agora entre com usuário e senha.");
     } catch (err: any) {
       setMensagem(`Erro ao criar conta: ${err.message || err}`);
     } finally {
@@ -537,141 +468,38 @@ export default function Home() {
     }
   }
 
-  async function recuperarSenha() {
-    setMensagem("");
-    setCarregando(true);
-
-    try {
-      const usuario = normalizarUsuario(loginUsuario || cadUsuario);
-      if (!usuario) throw new Error("Informe o usuário.");
-
-      const mapa = await supabaseRequest<any[]>(
-        `usuarios_login?select=*&usuario_login=eq.${encodeURIComponent(usuario)}&ativo=eq.true`
-      );
-      if (!mapa.length) throw new Error("Usuário não encontrado.");
-
-      const { error } = await supabase.auth.resetPasswordForEmail(mapa[0].email_auth, {
-        redirectTo: window.location.origin,
-      });
-
-      if (error) throw error;
-
-      setMensagem("Solicitação enviada. Se o SMTP estiver configurado, chegará um link de redefinição.");
-      setTelaLogin("ENTRAR");
-    } catch (err: any) {
-      setMensagem(`Erro ao recuperar senha: ${err.message || err}`);
-    } finally {
-      setCarregando(false);
-    }
-  }
-
   async function sair() {
-    await supabase.auth.signOut();
-    setSession(null);
-    setUser(null);
+    localStorage.removeItem("checklist_usuario_logado");
     setPerfilUsuario(null);
     setTelaOperador("LISTA");
     setMensagem("");
   }
 
-  const areas = useMemo(() => {
-    return ["TODAS", ...Array.from(new Set(equipamentos.map((e) => e.area || "LOCAL A DEFINIR"))).sort()];
-  }, [equipamentos]);
+  async function carregarDados() {
+    setMensagem("");
 
-  const equipamentosFiltrados = useMemo(() => {
-    return equipamentos.filter((e) => {
-      const passaArea = area === "TODAS" || e.area === area;
-      const texto = `${e.tag} ${e.tipo_equipamento} ${e.modelo || ""} ${e.numero_serie || ""} ${e.local_correto || ""} ${e.area || ""}`;
-      return passaArea && normalizar(texto).includes(normalizar(busca));
-    });
-  }, [equipamentos, area, busca]);
+    const [eqs, itens, itensTodos, chks, resps, decs, pars, usersApp] = await Promise.all([
+      supabaseRequest<Equipamento[]>("equipamentos?select=*&order=tag.asc"),
+      supabaseRequest<ChecklistItemPadrao[]>("checklist_itens_padrao?select=numero,descricao,ativo&ativo=eq.true&order=numero.asc"),
+      supabaseRequest<ChecklistItemPadrao[]>("checklist_itens_padrao?select=numero,descricao,ativo&order=numero.asc"),
+      supabaseRequest<ChecklistRegistro[]>("checklists?select=*&order=criado_em.desc&limit=1000"),
+      supabaseRequest<RespostaBanco[]>("checklist_respostas?select=*&order=item_numero.asc&limit=5000"),
+      supabaseRequest<DecisaoNA[]>("decisoes_na?select=*&order=criado_em.desc"),
+      supabaseRequest<ParadaManutencao[]>("paradas_manutencao?select=*&status=neq.FINALIZADA&order=criado_em.desc"),
+      supabaseRequest<PerfilUsuario[]>("usuarios_app?select=*&order=nome.asc"),
+    ]);
 
-  const equipamentosCadastroFiltrados = useMemo(() => {
-    const termo = normalizar(buscaCadastro);
-    if (!termo) return [];
-    return equipamentos
-      .filter((e) => normalizar(`${e.tag} ${e.tipo_equipamento} ${e.modelo || ""} ${e.local_correto || ""} ${e.area || ""}`).includes(termo))
-      .slice(0, 20);
-  }, [equipamentos, buscaCadastro]);
+    setEquipamentos(eqs || []);
+    setItensPadrao(itens?.length ? itens : itensFallback);
+    setItensConfig(itensTodos?.length ? itensTodos : itensFallback);
+    setChecklists(chks || []);
+    setRespostasBanco(resps || []);
+    setDecisoesNA(decs || []);
+    setParadasManutencao(pars || []);
+    setUsuariosApp(usersApp || []);
+  }
 
-  const equipamentoSelecionado = equipamentos.find((e) => e.tag === tagSelecionada) || null;
-  const checklistsDoDia = checklists.filter((c) => c.data_checklist === data);
-  const tagsFeitasHoje = new Set(checklistsDoDia.map((c) => normalizar(c.tag)));
-  const equipamentosObrigatorios = equipamentos.filter((e) => e.ativo !== false && e.checklist_obrigatorio !== false && e.status_operacional !== "EM_MANUTENCAO");
-  const pendentesHoje = equipamentosObrigatorios.filter((e) => !tagsFeitasHoje.has(normalizar(e.tag)));
-  const concluidosHoje = checklistsDoDia.filter((c) => equipamentosObrigatorios.some((e) => normalizar(e.tag) === normalizar(c.tag))).length;
-  const comAvariaHoje = checklistsDoDia.filter((c) => c.resultado_final === "COM AVARIA");
-  const horaAtual = new Date().getHours();
-
-  const equipamentosReservaDisponiveis = equipamentos.filter((e) =>
-    e.ativo !== false &&
-    e.tag !== tagSelecionada &&
-    e.status_operacional !== "EM_MANUTENCAO" &&
-    e.status_operacional !== "RESERVA"
-  );
-
-  const modelosDisponiveis = useMemo(() => {
-    const mapa = new Map<string, string>();
-
-    equipamentos.forEach((e) => {
-      const chave = modeloChave(e);
-      const label = modeloLabel(e);
-      if (!mapa.has(chave)) mapa.set(chave, label);
-    });
-
-    return Array.from(mapa.entries())
-      .map(([chave, label]) => ({ chave, label }))
-      .sort((a, b) => a.label.localeCompare(b.label));
-  }, [equipamentos]);
-
-  const itensRetiradosPorModelo = useMemo(() => {
-    return decisoesNA
-      .filter((d) => d.decisao === "REMOVER")
-      .sort((a, b) => `${a.modelo_label}-${a.item_numero}`.localeCompare(`${b.modelo_label}-${b.item_numero}`));
-  }, [decisoesNA]);
-
-  const itemIdsRemovidosModelo = useMemo(() => {
-    if (!equipamentoSelecionado) return [];
-    const chave = modeloChave(equipamentoSelecionado);
-    return decisoesNA.filter((d) => d.modelo_chave === chave && d.decisao === "REMOVER").map((d) => d.item_numero);
-  }, [equipamentoSelecionado, decisoesNA]);
-
-  const sugestoesNA = useMemo(() => {
-    const mapa = new Map<string, any>();
-
-    checklists.forEach((chk) => {
-      const mKey = modeloChave({ modelo: chk.modelo, tipo_equipamento: chk.tipo_equipamento });
-      const mLabel = modeloLabel({ modelo: chk.modelo, tipo_equipamento: chk.tipo_equipamento });
-      const respostasDoChecklist = respostasBanco.filter((r) => r.checklist_id === chk.id && r.status === "N/A");
-
-      respostasDoChecklist.forEach((resp) => {
-        const key = `${mKey}_${resp.item_numero}`;
-        const decisao = decisoesNA.find((d) => d.modelo_chave === mKey && d.item_numero === resp.item_numero);
-
-        if (!mapa.has(key)) {
-          mapa.set(key, {
-            key,
-            modeloKey: mKey,
-            modeloLabel: mLabel,
-            itemNumero: resp.item_numero,
-            itemDescricao: resp.item_descricao,
-            totalOcorrencias: 0,
-            observacoes: [],
-            decisao,
-          });
-        }
-
-        const item = mapa.get(key);
-        item.totalOcorrencias += 1;
-        item.decisao = decisao;
-        if (resp.observacao && !item.observacoes.includes(resp.observacao)) item.observacoes.push(resp.observacao);
-      });
-    });
-
-    return Array.from(mapa.values()).sort((a, b) => a.modeloLabel.localeCompare(b.modeloLabel));
-  }, [checklists, respostasBanco, decisoesNA]);
-
-  function resetarChecklist(removidos: number[] = itemIdsRemovidosModelo) {
+    function resetarChecklist(removidos: number[] = itemIdsRemovidosModelo) {
     setRespostas(montarRespostasPadrao(itensPadrao, removidos));
     setSituacaoEquipamento("EM OPERAÇÃO");
     setObservacaoGeral("");
@@ -719,7 +547,7 @@ export default function Home() {
   async function finalizarChecklist() {
     setMensagem("");
 
-    if (!user) return setMensagem("Usuário não autenticado.");
+    if (!perfilUsuario) return setMensagem("Usuário não autenticado.");
     if (!operador.trim()) return setMensagem("Informe o nome completo.");
     if (!equipamentoSelecionado) return setMensagem("Selecione um equipamento.");
     if (respostas.some((r) => !r.status)) return setMensagem("Responda todos os itens do checklist.");
@@ -753,7 +581,7 @@ export default function Home() {
       const payload: ChecklistRegistro = {
         data_checklist: data,
         operador_nome: operador.trim(),
-        operador_user_id: user.id,
+        operador_user_id: null,
         equipamento_id: equipamentoSelecionado.id || null,
         tag: equipamentoSelecionado.tag,
         tipo_equipamento: equipamentoSelecionado.tipo_equipamento,
@@ -801,7 +629,7 @@ export default function Home() {
             equipamento_id: equipamentoSelecionado.id || null,
             tag_original: equipamentoSelecionado.tag,
             operador_nome: operador.trim(),
-            operador_user_id: user.id,
+            operador_user_id: null,
             numero_os: numeroOS.trim(),
             motivo: observacaoGeral || "Equipamento parado por avaria identificada no checklist.",
             afeta_operacao: afetaOperacao,
@@ -1126,6 +954,81 @@ export default function Home() {
     }
   }
 
+  function limparFormularioUsuarioAdmin() {
+    setUsuarioAdminNome("");
+    setUsuarioAdminLogin("");
+    setUsuarioAdminSenha("");
+    setUsuarioAdminPerfil("OPERADOR");
+    setUsuarioAdminAtivo(true);
+    setUsuarioAdminEditando(null);
+  }
+
+  function editarUsuarioApp(u: PerfilUsuario) {
+    setUsuarioAdminEditando(u.usuario);
+    setUsuarioAdminNome(u.nome);
+    setUsuarioAdminLogin(u.usuario);
+    setUsuarioAdminSenha(u.senha);
+    setUsuarioAdminPerfil(u.perfil);
+    setUsuarioAdminAtivo(u.ativo !== false);
+    setMensagem("");
+  }
+
+  async function salvarUsuarioAppAdmin() {
+    setMensagem("");
+
+    if (!isAdmin) return setMensagem("Somente Admin pode alterar usuários.");
+
+    const usuario = normalizarUsuario(usuarioAdminLogin);
+    if (!usuarioAdminNome.trim()) return setMensagem("Informe o nome do usuário.");
+    if (!usuario) return setMensagem("Informe um usuário válido.");
+    if (usuarioAdminSenha.length < 6) return setMensagem("A senha precisa ter pelo menos 6 caracteres.");
+
+    try {
+      setCarregando(true);
+
+      await supabaseRequest<PerfilUsuario[]>("usuarios_app?on_conflict=usuario", {
+        method: "POST",
+        headers: { Prefer: "resolution=merge-duplicates,return=representation" },
+        body: JSON.stringify({
+          nome: usuarioAdminNome.trim(),
+          usuario,
+          senha: usuarioAdminSenha,
+          perfil: usuarioAdminPerfil,
+          ativo: usuarioAdminAtivo,
+        }),
+      });
+
+      await carregarDados();
+      limparFormularioUsuarioAdmin();
+      setMensagem(`Usuário ${usuario} salvo.`);
+    } catch (err: any) {
+      setMensagem(`Erro ao salvar usuário: ${err.message || err}`);
+    } finally {
+      setCarregando(false);
+    }
+  }
+
+  async function alternarUsuarioAtivo(u: PerfilUsuario) {
+    if (!isAdmin) return setMensagem("Somente Admin pode alterar usuários.");
+
+    try {
+      setCarregando(true);
+
+      await supabaseRequest<PerfilUsuario[]>(`usuarios_app?usuario=eq.${encodeURIComponent(u.usuario)}`, {
+        method: "PATCH",
+        headers: { Prefer: "return=representation" },
+        body: JSON.stringify({ ativo: !u.ativo }),
+      });
+
+      await carregarDados();
+      setMensagem(`Usuário ${u.usuario} ${!u.ativo ? "ativado" : "bloqueado"}.`);
+    } catch (err: any) {
+      setMensagem(`Erro ao alterar usuário: ${err.message || err}`);
+    } finally {
+      setCarregando(false);
+    }
+  }
+
   function exportarResumoCSV() {
     const cabecalho = ["DATA", "HORA", "OPERADOR", "TAG", "EQUIPAMENTO", "MODELO", "AREA", "SITUACAO", "RESULTADO", "HORIMETRO", "OBSERVACAO", "FOTO_EVIDENCIA", "FOTO_HORIMETRO"];
     const linhas = checklists.map((r) => [
@@ -1158,7 +1061,7 @@ export default function Home() {
     baixarArquivo(`checklists_detalhado_${data}.csv`, csv);
   }
 
-  if (!session || !perfilUsuario) {
+  if (!perfilUsuario) {
     return (
       <main style={{ ...styles.main, display: "grid", placeItems: "center" }}>
         <div style={styles.loginBox}>
@@ -1169,7 +1072,7 @@ export default function Home() {
               <p>
                 {telaLogin === "ENTRAR" && "Entre com usuário e senha."}
                 {telaLogin === "CRIAR" && "Crie sua conta de operador."}
-                {telaLogin === "ESQUECI" && "Informe seu usuário para recuperar senha."}
+
               </p>
             </div>
           </div>
@@ -1185,7 +1088,7 @@ export default function Home() {
               <button onClick={entrarNoPerfil} style={styles.botaoPreto}>Entrar</button>
               <div style={styles.botoesLinha}>
                 <button onClick={() => { setTelaLogin("CRIAR"); setMensagem(""); }} style={styles.botaoCinza}>Criar conta</button>
-                <button onClick={() => { setTelaLogin("ESQUECI"); setMensagem(""); }} style={styles.botaoCinza}>Esqueci minha senha</button>
+
               </div>
             </>
           )}
@@ -1211,18 +1114,6 @@ export default function Home() {
             </>
           )}
 
-          {telaLogin === "ESQUECI" && (
-            <>
-              <Campo label="Usuário">
-                <input value={loginUsuario} onChange={(e) => setLoginUsuario(e.target.value)} placeholder="Ex.: eduardo.m" style={styles.input} />
-              </Campo>
-              <button onClick={recuperarSenha} style={styles.botaoPreto}>Enviar recuperação</button>
-              <div style={styles.botoesLinha}>
-                <button onClick={() => { setTelaLogin("ENTRAR"); setMensagem(""); }} style={styles.botaoCinza}>Voltar para login</button>
-              </div>
-            </>
-          )}
-
           <div style={styles.loginDica}>
             Use somente o usuário curto, por exemplo: eduardo ou eduardo.m.
           </div>
@@ -1242,7 +1133,7 @@ export default function Home() {
             <div>
               <div style={styles.empresaNome}>Baterias Pioneiro</div>
               <h1 style={styles.titulo}>Checklist Diário de Empilhadeiras e Paleteiras</h1>
-              <p style={styles.subtitulo}>Usuário: {perfilUsuario.usuario_login} | Perfil: {perfil}</p>
+              <p style={styles.subtitulo}>Usuário: {perfilUsuario.usuario} | Perfil: {perfil}</p>
             </div>
           </div>
           <div style={styles.perfilBox}>
@@ -1501,6 +1392,63 @@ export default function Home() {
                   )}
                 </div>
               ))}
+            </section>
+
+            <section style={styles.box}>
+              <h2 style={styles.boxTitulo}>Usuários do sistema</h2>
+              <p style={styles.textoApoio}>
+                Crie, bloqueie e altere perfis de usuários sem e-mail. O próprio operador também pode criar conta na tela inicial.
+              </p>
+
+              <div style={isMobile ? styles.gridMobile : styles.grid4}>
+                <Campo label="Nome completo">
+                  <input value={usuarioAdminNome} onChange={(e) => setUsuarioAdminNome(e.target.value)} placeholder="Nome completo" style={styles.input} />
+                </Campo>
+                <Campo label="Usuário">
+                  <input value={usuarioAdminLogin} onChange={(e) => setUsuarioAdminLogin(normalizarUsuario(e.target.value))} placeholder="Ex.: joao.s" style={styles.input} />
+                </Campo>
+                <Campo label="Senha">
+                  <input value={usuarioAdminSenha} onChange={(e) => setUsuarioAdminSenha(e.target.value)} placeholder="Mínimo 6 caracteres" style={styles.input} />
+                </Campo>
+                <Campo label="Perfil">
+                  <select value={usuarioAdminPerfil} onChange={(e) => setUsuarioAdminPerfil(e.target.value as Perfil)} style={styles.input}>
+                    <option value="OPERADOR">OPERADOR</option>
+                    <option value="ADMIN">ADMIN</option>
+                  </select>
+                </Campo>
+              </div>
+
+              <div style={styles.obrigatorioBox}>
+                <label style={styles.checkLabel}>
+                  <input type="checkbox" checked={usuarioAdminAtivo} onChange={(e) => setUsuarioAdminAtivo(e.target.checked)} />
+                  Usuário ativo
+                </label>
+              </div>
+
+              <div style={styles.botoesLinha}>
+                <button onClick={salvarUsuarioAppAdmin} style={styles.botaoVerde}>{usuarioAdminEditando ? "Salvar usuário" : "Criar usuário"}</button>
+                <button onClick={limparFormularioUsuarioAdmin} style={styles.botaoCinza}>Limpar</button>
+              </div>
+
+              <div style={styles.tabelaEquipamentos}>
+                {usuariosApp.map((u) => (
+                  <div key={u.usuario} style={isMobile ? styles.linhaEquipamentoMobile : styles.linhaEquipamento}>
+                    <div>
+                      <strong>{u.nome}</strong><br />
+                      Usuário: {u.usuario} | Perfil: {u.perfil}<br />
+                      <span style={u.ativo === false ? styles.badgeOpcional : styles.badgeObrigatorio}>
+                        {u.ativo === false ? "Bloqueado" : "Ativo"}
+                      </span>
+                    </div>
+                    <div style={styles.botoesLinha}>
+                      <button onClick={() => editarUsuarioApp(u)} style={styles.botaoCinza}>Editar</button>
+                      <button onClick={() => alternarUsuarioAtivo(u)} style={u.ativo === false ? styles.botaoVerde : styles.botaoPerigo}>
+                        {u.ativo === false ? "Ativar" : "Bloquear"}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </section>
 
             <section style={styles.box}>
