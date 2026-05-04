@@ -291,7 +291,6 @@ export default function Home() {
 
   const [cadNome, setCadNome] = useState("");
   const [cadUsuario, setCadUsuario] = useState("");
-  const [cadEmailRecuperacao, setCadEmailRecuperacao] = useState("");
   const [cadSenha, setCadSenha] = useState("");
   const [cadSenha2, setCadSenha2] = useState("");
 
@@ -301,6 +300,7 @@ export default function Home() {
 
   const [equipamentos, setEquipamentos] = useState<Equipamento[]>([]);
   const [itensPadrao, setItensPadrao] = useState<ChecklistItemPadrao[]>(itensFallback);
+  const [itensConfig, setItensConfig] = useState<ChecklistItemPadrao[]>(itensFallback);
   const [checklists, setChecklists] = useState<ChecklistRegistro[]>([]);
   const [respostasBanco, setRespostasBanco] = useState<RespostaBanco[]>([]);
   const [decisoesNA, setDecisoesNA] = useState<DecisaoNA[]>([]);
@@ -335,6 +335,7 @@ export default function Home() {
   const [itemChecklistNumero, setItemChecklistNumero] = useState("");
   const [itemChecklistDescricao, setItemChecklistDescricao] = useState("");
   const [itemChecklistEditando, setItemChecklistEditando] = useState<number | null>(null);
+  const [modeloConfigSelecionado, setModeloConfigSelecionado] = useState("");
 
   const perfil: Perfil = perfilUsuario?.perfil || "OPERADOR";
   const isAdmin = perfil === "ADMIN";
@@ -406,9 +407,10 @@ export default function Home() {
   async function carregarDados() {
     setMensagem("");
 
-    const [eqs, itens, chks, resps, decs, pars] = await Promise.all([
+    const [eqs, itens, itensTodos, chks, resps, decs, pars] = await Promise.all([
       supabaseRequest<Equipamento[]>("equipamentos?select=*&order=tag.asc"),
       supabaseRequest<ChecklistItemPadrao[]>("checklist_itens_padrao?select=numero,descricao,ativo&ativo=eq.true&order=numero.asc"),
+      supabaseRequest<ChecklistItemPadrao[]>("checklist_itens_padrao?select=numero,descricao,ativo&order=numero.asc"),
       supabaseRequest<ChecklistRegistro[]>("checklists?select=*&order=criado_em.desc&limit=1000"),
       supabaseRequest<RespostaBanco[]>("checklist_respostas?select=*&order=item_numero.asc&limit=5000"),
       supabaseRequest<DecisaoNA[]>("decisoes_na?select=*&order=criado_em.desc"),
@@ -417,6 +419,7 @@ export default function Home() {
 
     setEquipamentos(eqs || []);
     setItensPadrao(itens?.length ? itens : itensFallback);
+    setItensConfig(itensTodos?.length ? itensTodos : itensFallback);
     setChecklists(chks || []);
     setRespostasBanco(resps || []);
     setDecisoesNA(decs || []);
@@ -463,8 +466,7 @@ export default function Home() {
     try {
       const usuario = normalizarUsuario(cadUsuario);
       if (!cadNome.trim()) throw new Error("Informe o nome completo.");
-      if (!usuario) throw new Error("Informe um usuário válido.");
-      if (!cadEmailRecuperacao.includes("@")) throw new Error("Informe um e-mail de recuperação válido.");
+      if (!usuario) throw new Error("Informe um usuário válido. Use apenas letras, números, ponto, hífen ou underline.");
       if (cadSenha.length < 6) throw new Error("A senha precisa ter pelo menos 6 caracteres.");
       if (cadSenha !== cadSenha2) throw new Error("As senhas não conferem.");
 
@@ -482,7 +484,6 @@ export default function Home() {
           data: {
             nome: cadNome.trim(),
             usuario_login: usuario,
-            email_recuperacao: cadEmailRecuperacao.trim(),
           },
         },
       });
@@ -496,7 +497,7 @@ export default function Home() {
         body: JSON.stringify({
           usuario_login: usuario,
           email_auth: emailAuth,
-          email_recuperacao: cadEmailRecuperacao.trim(),
+          email_recuperacao: "",
           nome: cadNome.trim(),
           ativo: true,
         }),
@@ -514,7 +515,7 @@ export default function Home() {
           nome: cadNome.trim(),
           usuario_login: usuario,
           email_auth: emailAuth,
-          email_recuperacao: cadEmailRecuperacao.trim(),
+          email_recuperacao: "",
           email: emailAuth,
           perfil: "OPERADOR",
           ativo: true,
@@ -527,7 +528,6 @@ export default function Home() {
       setMensagem("Conta criada como OPERADOR. Entre com usuário e senha.");
       setCadNome("");
       setCadUsuario("");
-      setCadEmailRecuperacao("");
       setCadSenha("");
       setCadSenha2("");
     } catch (err: any) {
@@ -609,6 +609,26 @@ export default function Home() {
     e.status_operacional !== "EM_MANUTENCAO" &&
     e.status_operacional !== "RESERVA"
   );
+
+  const modelosDisponiveis = useMemo(() => {
+    const mapa = new Map<string, string>();
+
+    equipamentos.forEach((e) => {
+      const chave = modeloChave(e);
+      const label = modeloLabel(e);
+      if (!mapa.has(chave)) mapa.set(chave, label);
+    });
+
+    return Array.from(mapa.entries())
+      .map(([chave, label]) => ({ chave, label }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [equipamentos]);
+
+  const itensRetiradosPorModelo = useMemo(() => {
+    return decisoesNA
+      .filter((d) => d.decisao === "REMOVER")
+      .sort((a, b) => `${a.modelo_label}-${a.item_numero}`.localeCompare(`${b.modelo_label}-${b.item_numero}`));
+  }, [decisoesNA]);
 
   const itemIdsRemovidosModelo = useMemo(() => {
     if (!equipamentoSelecionado) return [];
@@ -1046,6 +1066,66 @@ export default function Home() {
     }
   }
 
+  async function retirarItemPorModelo(item: ChecklistItemPadrao) {
+    setMensagem("");
+
+    if (!isAdmin) return setMensagem("Somente Admin pode configurar o checklist.");
+    if (!modeloConfigSelecionado) return setMensagem("Selecione o modelo para retirar este item.");
+
+    const modelo = modelosDisponiveis.find((m) => m.chave === modeloConfigSelecionado);
+    if (!modelo) return setMensagem("Modelo não encontrado.");
+
+    try {
+      setCarregando(true);
+
+      await supabaseRequest<DecisaoNA[]>("decisoes_na?on_conflict=modelo_chave,item_numero", {
+        method: "POST",
+        headers: { Prefer: "resolution=merge-duplicates,return=representation" },
+        body: JSON.stringify({
+          modelo_chave: modelo.chave,
+          modelo_label: modelo.label,
+          item_numero: item.numero,
+          item_descricao: item.descricao,
+          decisao: "REMOVER",
+          observacao_admin: "Item retirado manualmente na configuração do checklist.",
+        }),
+      });
+
+      await carregarDados();
+      setMensagem(`Item ${item.numero} retirado para todos os equipamentos do modelo ${modelo.label}.`);
+    } catch (err: any) {
+      setMensagem(`Erro ao retirar item por modelo: ${err.message || err}`);
+    } finally {
+      setCarregando(false);
+    }
+  }
+
+  async function reativarItemPorModelo(decisao: DecisaoNA) {
+    setMensagem("");
+
+    if (!isAdmin) return setMensagem("Somente Admin pode configurar o checklist.");
+
+    try {
+      setCarregando(true);
+
+      await supabaseRequest<DecisaoNA[]>(`decisoes_na?id=eq.${decisao.id}`, {
+        method: "PATCH",
+        headers: { Prefer: "return=representation" },
+        body: JSON.stringify({
+          decisao: "MANTER",
+          observacao_admin: "Item reativado manualmente na configuração do checklist.",
+        }),
+      });
+
+      await carregarDados();
+      setMensagem(`Item ${decisao.item_numero} reativado para o modelo ${decisao.modelo_label}.`);
+    } catch (err: any) {
+      setMensagem(`Erro ao reativar item por modelo: ${err.message || err}`);
+    } finally {
+      setCarregando(false);
+    }
+  }
+
   function exportarResumoCSV() {
     const cabecalho = ["DATA", "HORA", "OPERADOR", "TAG", "EQUIPAMENTO", "MODELO", "AREA", "SITUACAO", "RESULTADO", "HORIMETRO", "OBSERVACAO", "FOTO_EVIDENCIA", "FOTO_HORIMETRO"];
     const linhas = checklists.map((r) => [
@@ -1117,9 +1197,6 @@ export default function Home() {
               </Campo>
               <Campo label="Usuário">
                 <input value={cadUsuario} onChange={(e) => setCadUsuario(normalizarUsuario(e.target.value))} placeholder="Ex.: eduardo.m" style={styles.input} />
-              </Campo>
-              <Campo label="E-mail de recuperação">
-                <input value={cadEmailRecuperacao} onChange={(e) => setCadEmailRecuperacao(e.target.value)} type="email" placeholder="email@bateriaspioneiro.com.br" style={styles.input} />
               </Campo>
               <Campo label="Senha">
                 <input value={cadSenha} onChange={(e) => setCadSenha(e.target.value)} type="password" placeholder="Mínimo 6 caracteres" style={styles.input} />
@@ -1429,8 +1506,8 @@ export default function Home() {
             <section style={styles.box}>
               <h2 style={styles.boxTitulo}>Configuração do Checklist</h2>
               <p style={styles.textoApoio}>
-                Use esta área para adicionar, editar, ativar ou retirar itens do checklist diário. 
-                Desativar é melhor do que apagar, porque preserva o histórico dos checklists antigos.
+                Configure os itens do checklist direto pelo app. Você pode retirar um item para todos os equipamentos
+                ou retirar apenas para todos os equipamentos do mesmo modelo.
               </p>
 
               <div style={isMobile ? styles.gridMobile : styles.grid2}>
@@ -1462,26 +1539,57 @@ export default function Home() {
                 </button>
               </div>
 
+              <section style={styles.boxInternoDestaque}>
+                <h3 style={styles.subtituloSecao}>Retirada por modelo</h3>
+                <p style={styles.textoApoio}>
+                  Se você selecionar um modelo e clicar em “Retirar deste modelo”, o item some do checklist
+                  de todos os equipamentos com o mesmo modelo.
+                </p>
+                <Campo label="Modelo para retirada específica">
+                  <select value={modeloConfigSelecionado} onChange={(e) => setModeloConfigSelecionado(e.target.value)} style={styles.input}>
+                    <option value="">Selecione um modelo</option>
+                    {modelosDisponiveis.map((m) => (
+                      <option key={m.chave} value={m.chave}>{m.label}</option>
+                    ))}
+                  </select>
+                </Campo>
+              </section>
+
               <div style={styles.tabelaEquipamentos}>
-                {[...itensPadrao].sort((a, b) => a.numero - b.numero).map((item) => (
+                {[...itensConfig].sort((a, b) => a.numero - b.numero).map((item) => (
                   <div key={item.numero} style={isMobile ? styles.linhaEquipamentoMobile : styles.linhaEquipamento}>
                     <div>
                       <strong>{item.numero}. {item.descricao}</strong><br />
                       <span style={item.ativo === false ? styles.badgeOpcional : styles.badgeObrigatorio}>
-                        {item.ativo === false ? "Inativo / retirado" : "Ativo"}
+                        {item.ativo === false ? "Inativo geral / retirado de todos" : "Ativo geral"}
                       </span>
                     </div>
                     <div style={styles.botoesLinha}>
                       <button onClick={() => editarItemChecklist(item)} style={styles.botaoCinza}>Editar</button>
                       {item.ativo === false ? (
-                        <button onClick={() => alterarAtivoItemChecklist(item, true)} style={styles.botaoVerde}>Reativar</button>
+                        <button onClick={() => alterarAtivoItemChecklist(item, true)} style={styles.botaoVerde}>Reativar geral</button>
                       ) : (
-                        <button onClick={() => alterarAtivoItemChecklist(item, false)} style={styles.botaoPerigo}>Retirar</button>
+                        <button onClick={() => alterarAtivoItemChecklist(item, false)} style={styles.botaoPerigo}>Retirar de todos</button>
                       )}
+                      <button onClick={() => retirarItemPorModelo(item)} style={styles.botaoPreto}>Retirar deste modelo</button>
                     </div>
                   </div>
                 ))}
               </div>
+
+              <section style={styles.boxInterno}>
+                <h3 style={styles.subtituloSecao}>Itens retirados por modelo</h3>
+                {itensRetiradosPorModelo.length === 0 && <p>Nenhum item retirado por modelo.</p>}
+                {itensRetiradosPorModelo.map((d) => (
+                  <div key={`${d.modelo_chave}-${d.item_numero}`} style={isMobile ? styles.linhaEquipamentoMobile : styles.linhaEquipamento}>
+                    <div>
+                      <strong>Modelo: {d.modelo_label}</strong><br />
+                      Item {d.item_numero}: {d.item_descricao}
+                    </div>
+                    <button onClick={() => reativarItemPorModelo(d)} style={styles.botaoVerde}>Reativar neste modelo</button>
+                  </div>
+                ))}
+              </section>
             </section>
 
             <section style={styles.box}>
