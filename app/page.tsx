@@ -351,16 +351,6 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    function atualizarMobile() {
-      setIsMobile(window.innerWidth <= 820);
-    }
-
-    atualizarMobile();
-    window.addEventListener("resize", atualizarMobile);
-    return () => window.removeEventListener("resize", atualizarMobile);
-  }, []);
-
-  useEffect(() => {
     async function iniciarLoginLocal() {
       setCarregando(true);
 
@@ -499,7 +489,104 @@ export default function Home() {
     setUsuariosApp(usersApp || []);
   }
 
-    function resetarChecklist(removidos: number[] = itemIdsRemovidosModelo) {
+    const areas = useMemo(() => {
+    return ["TODAS", ...Array.from(new Set(equipamentos.map((e) => e.area || "LOCAL A DEFINIR"))).sort()];
+  }, [equipamentos]);
+
+  const equipamentosFiltrados = useMemo(() => {
+    return equipamentos.filter((e) => {
+      const passaArea = area === "TODAS" || e.area === area;
+      const texto = `${e.tag} ${e.tipo_equipamento} ${e.modelo || ""} ${e.numero_serie || ""} ${e.local_correto || ""} ${e.area || ""}`;
+      return passaArea && normalizar(texto).includes(normalizar(busca));
+    });
+  }, [equipamentos, area, busca]);
+
+  const equipamentosCadastroFiltrados = useMemo(() => {
+    const termo = normalizar(buscaCadastro);
+    if (!termo) return [];
+    return equipamentos
+      .filter((e) => normalizar(`${e.tag} ${e.tipo_equipamento} ${e.modelo || ""} ${e.local_correto || ""} ${e.area || ""}`).includes(termo))
+      .slice(0, 20);
+  }, [equipamentos, buscaCadastro]);
+
+  const equipamentoSelecionado = equipamentos.find((e) => e.tag === tagSelecionada) || null;
+  const checklistsDoDia = checklists.filter((c) => c.data_checklist === data);
+  const tagsFeitasHoje = new Set(checklistsDoDia.map((c) => normalizar(c.tag)));
+  const equipamentosObrigatorios = equipamentos.filter((e) => e.ativo !== false && e.checklist_obrigatorio !== false && e.status_operacional !== "EM_MANUTENCAO");
+  const pendentesHoje = equipamentosObrigatorios.filter((e) => !tagsFeitasHoje.has(normalizar(e.tag)));
+  const concluidosHoje = checklistsDoDia.filter((c) => equipamentosObrigatorios.some((e) => normalizar(e.tag) === normalizar(c.tag))).length;
+  const comAvariaHoje = checklistsDoDia.filter((c) => c.resultado_final === "COM AVARIA");
+  const horaAtual = new Date().getHours();
+
+  const equipamentosReservaDisponiveis = equipamentos.filter((e) =>
+    e.ativo !== false &&
+    e.tag !== tagSelecionada &&
+    e.status_operacional !== "EM_MANUTENCAO" &&
+    e.status_operacional !== "RESERVA"
+  );
+
+  const modelosDisponiveis = useMemo(() => {
+    const mapa = new Map<string, string>();
+
+    equipamentos.forEach((e) => {
+      const chave = modeloChave(e);
+      const label = modeloLabel(e);
+      if (!mapa.has(chave)) mapa.set(chave, label);
+    });
+
+    return Array.from(mapa.entries())
+      .map(([chave, label]) => ({ chave, label }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [equipamentos]);
+
+  const itensRetiradosPorModelo = useMemo(() => {
+    return decisoesNA
+      .filter((d) => d.decisao === "REMOVER")
+      .sort((a, b) => `${a.modelo_label}-${a.item_numero}`.localeCompare(`${b.modelo_label}-${b.item_numero}`));
+  }, [decisoesNA]);
+
+  const itemIdsRemovidosModelo = useMemo(() => {
+    if (!equipamentoSelecionado) return [];
+    const chave = modeloChave(equipamentoSelecionado);
+    return decisoesNA.filter((d) => d.modelo_chave === chave && d.decisao === "REMOVER").map((d) => d.item_numero);
+  }, [equipamentoSelecionado, decisoesNA]);
+
+  const sugestoesNA = useMemo(() => {
+    const mapa = new Map<string, any>();
+
+    checklists.forEach((chk) => {
+      const mKey = modeloChave({ modelo: chk.modelo, tipo_equipamento: chk.tipo_equipamento });
+      const mLabel = modeloLabel({ modelo: chk.modelo, tipo_equipamento: chk.tipo_equipamento });
+      const respostasDoChecklist = respostasBanco.filter((r) => r.checklist_id === chk.id && r.status === "N/A");
+
+      respostasDoChecklist.forEach((resp) => {
+        const key = `${mKey}_${resp.item_numero}`;
+        const decisao = decisoesNA.find((d) => d.modelo_chave === mKey && d.item_numero === resp.item_numero);
+
+        if (!mapa.has(key)) {
+          mapa.set(key, {
+            key,
+            modeloKey: mKey,
+            modeloLabel: mLabel,
+            itemNumero: resp.item_numero,
+            itemDescricao: resp.item_descricao,
+            totalOcorrencias: 0,
+            observacoes: [],
+            decisao,
+          });
+        }
+
+        const item = mapa.get(key);
+        item.totalOcorrencias += 1;
+        item.decisao = decisao;
+        if (resp.observacao && !item.observacoes.includes(resp.observacao)) item.observacoes.push(resp.observacao);
+      });
+    });
+
+    return Array.from(mapa.values()).sort((a, b) => a.modeloLabel.localeCompare(b.modeloLabel));
+  }, [checklists, respostasBanco, decisoesNA]);
+
+  function resetarChecklist(removidos: number[] = itemIdsRemovidosModelo) {
     setRespostas(montarRespostasPadrao(itensPadrao, removidos));
     setSituacaoEquipamento("EM OPERAÇÃO");
     setObservacaoGeral("");
