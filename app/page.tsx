@@ -13,6 +13,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 type Perfil = "ADMIN" | "OPERADOR";
 type StatusItem = "OK" | "NÃO OK" | "N/A" | "";
 type TelaLogin = "ENTRAR" | "CRIAR";
+type TurnoCodigo = "T1" | "T2";
 
 type PerfilUsuario = {
   id?: string;
@@ -59,6 +60,9 @@ type ChecklistRegistro = {
   id?: string;
   data_checklist: string;
   hora_checklist?: string;
+  turno_codigo?: TurnoCodigo;
+  turno_nome?: string;
+  horario_referencia?: string;
   operador_nome: string;
   operador_user_id?: string | null;
   equipamento_id?: string | null;
@@ -149,6 +153,19 @@ const equipamentoVazio: Equipamento = {
 
 function hojeISO() {
   return new Date().toISOString().slice(0, 10);
+}
+
+function turnoAutomatico(): TurnoCodigo {
+  const hora = new Date().getHours();
+  return hora < 15 ? "T1" : "T2";
+}
+
+function nomeTurno(turno: TurnoCodigo) {
+  return turno === "T1" ? "Turno 1 - 06h" : "Turno 2 - 18h";
+}
+
+function horarioReferenciaTurno(turno: TurnoCodigo) {
+  return turno === "T1" ? "06:00" : "18:00";
 }
 
 function normalizar(texto: string) {
@@ -301,6 +318,7 @@ export default function Home() {
 
   const [operador, setOperador] = useState("");
   const [data, setData] = useState(hojeISO());
+  const [turnoSelecionado, setTurnoSelecionado] = useState<TurnoCodigo>(turnoAutomatico());
   const [area, setArea] = useState("TODAS");
   const [busca, setBusca] = useState("");
   const [tagSelecionada, setTagSelecionada] = useState("");
@@ -511,12 +529,22 @@ export default function Home() {
 
   const equipamentoSelecionado = equipamentos.find((e) => e.tag === tagSelecionada) || null;
   const checklistsDoDia = checklists.filter((c) => c.data_checklist === data);
-  const tagsFeitasHoje = new Set(checklistsDoDia.map((c) => normalizar(c.tag)));
+  const checklistsTurnoSelecionado = checklistsDoDia.filter((c) => (c.turno_codigo || "T1") === turnoSelecionado);
+  const tagsFeitasTurno = new Set(checklistsTurnoSelecionado.map((c) => normalizar(c.tag)));
   const equipamentosObrigatorios = equipamentos.filter((e) => e.ativo !== false && e.checklist_obrigatorio !== false && e.status_operacional !== "EM_MANUTENCAO");
-  const pendentesHoje = equipamentosObrigatorios.filter((e) => !tagsFeitasHoje.has(normalizar(e.tag)));
-  const concluidosHoje = checklistsDoDia.filter((c) => equipamentosObrigatorios.some((e) => normalizar(e.tag) === normalizar(c.tag))).length;
-  const comAvariaHoje = checklistsDoDia.filter((c) => c.resultado_final === "COM AVARIA");
+  const pendentesHoje = equipamentosObrigatorios.filter((e) => !tagsFeitasTurno.has(normalizar(e.tag)));
+  const concluidosHoje = checklistsTurnoSelecionado.filter((c) => equipamentosObrigatorios.some((e) => normalizar(e.tag) === normalizar(c.tag))).length;
+  const comAvariaHoje = checklistsTurnoSelecionado.filter((c) => c.resultado_final === "COM AVARIA");
   const horaAtual = new Date().getHours();
+
+  const checklistsT1 = checklistsDoDia.filter((c) => (c.turno_codigo || "T1") === "T1");
+  const checklistsT2 = checklistsDoDia.filter((c) => (c.turno_codigo || "T1") === "T2");
+  const tagsT1 = new Set(checklistsT1.map((c) => normalizar(c.tag)));
+  const tagsT2 = new Set(checklistsT2.map((c) => normalizar(c.tag)));
+  const pendentesT1 = equipamentosObrigatorios.filter((e) => !tagsT1.has(normalizar(e.tag)));
+  const pendentesT2 = equipamentosObrigatorios.filter((e) => !tagsT2.has(normalizar(e.tag)));
+  const avariasT1 = checklistsT1.filter((c) => c.resultado_final === "COM AVARIA");
+  const avariasT2 = checklistsT2.filter((c) => c.resultado_final === "COM AVARIA");
 
   const equipamentosReservaDisponiveis = equipamentos.filter((e) =>
     e.ativo !== false &&
@@ -608,7 +636,38 @@ export default function Home() {
     setTagSelecionada(tag);
     setTelaOperador("CHECKLIST");
     setMensagem("");
-    resetarChecklist(removidos);
+
+    const existente = checklists.find((c) =>
+      c.data_checklist === data &&
+      c.tag === tag &&
+      (c.turno_codigo || "T1") === turnoSelecionado
+    );
+
+    if (existente?.id) {
+      setSituacaoEquipamento(existente.situacao_equipamento || "EM OPERAÇÃO");
+      setObservacaoGeral(existente.observacao_geral || "");
+      setHorimetroLeitura(existente.horimetro || "");
+      setConfirmacaoOperador(existente.confirmacao_operador || false);
+      setFotoEvidencia(existente.foto_evidencia_url || "");
+      setFotoHorimetro(existente.foto_horimetro_url || "");
+      setAvariaImpedeUso(false);
+      setNumeroOS("");
+      setAfetaOperacao(false);
+
+      const resp = respostasBanco
+        .filter((r) => r.checklist_id === existente.id)
+        .sort((a, b) => a.item_numero - b.item_numero)
+        .map((r) => ({
+          item_numero: r.item_numero,
+          item_descricao: r.item_descricao,
+          status: r.status,
+          observacao: r.observacao || "",
+        }));
+
+      setRespostas(resp.length ? resp : montarRespostasPadrao(itensPadrao, removidos));
+    } else {
+      resetarChecklist(removidos);
+    }
   }
 
   function alterarStatusItem(itemNumero: number, status: StatusItem) {
@@ -669,6 +728,9 @@ export default function Home() {
         data_checklist: data,
         operador_nome: operador.trim(),
         operador_user_id: null,
+        turno_codigo: turnoSelecionado,
+        turno_nome: nomeTurno(turnoSelecionado),
+        horario_referencia: horarioReferenciaTurno(turnoSelecionado),
         equipamento_id: equipamentoSelecionado.id || null,
         tag: equipamentoSelecionado.tag,
         tipo_equipamento: equipamentoSelecionado.tipo_equipamento,
@@ -685,7 +747,7 @@ export default function Home() {
         confirmacao_operador: true,
       };
 
-      const salvo = await supabaseRequest<ChecklistRegistro[]>("checklists?on_conflict=tag,data_checklist", {
+      const salvo = await supabaseRequest<ChecklistRegistro[]>("checklists?on_conflict=tag,data_checklist,turno_codigo", {
         method: "POST",
         headers: { Prefer: "resolution=merge-duplicates,return=representation" },
         body: JSON.stringify(payload),
@@ -735,7 +797,7 @@ export default function Home() {
       }
 
       await carregarDados();
-      setMensagem(`Checklist da ${equipamentoSelecionado.tag} finalizado: ${resultado}.`);
+      setMensagem(`Checklist da ${equipamentoSelecionado.tag} finalizado no ${nomeTurno(turnoSelecionado)}: ${resultado}.`);
       setTelaOperador("LISTA");
     } catch (err: any) {
       setMensagem(`Erro ao salvar checklist: ${err.message || err}`);
@@ -1117,9 +1179,11 @@ export default function Home() {
   }
 
   function exportarResumoCSV() {
-    const cabecalho = ["DATA", "HORA", "OPERADOR", "TAG", "EQUIPAMENTO", "MODELO", "AREA", "SITUACAO", "RESULTADO", "HORIMETRO", "OBSERVACAO", "FOTO_EVIDENCIA", "FOTO_HORIMETRO"];
+    const cabecalho = ["DATA", "TURNO", "HORARIO_REFERENCIA", "HORA", "OPERADOR", "TAG", "EQUIPAMENTO", "MODELO", "AREA", "SITUACAO", "RESULTADO", "HORIMETRO", "OBSERVACAO", "FOTO_EVIDENCIA", "FOTO_HORIMETRO"];
     const linhas = checklists.map((r) => [
       r.data_checklist,
+      r.turno_nome || nomeTurno((r.turno_codigo || "T1") as TurnoCodigo),
+      r.horario_referencia || horarioReferenciaTurno((r.turno_codigo || "T1") as TurnoCodigo),
       r.hora_checklist || "",
       r.operador_nome,
       r.tag,
@@ -1138,11 +1202,11 @@ export default function Home() {
   }
 
   function exportarDetalhadoCSV() {
-    const cabecalho = ["DATA", "OPERADOR", "TAG", "MODELO", "AREA", "RESULTADO_FINAL", "ITEM", "STATUS_ITEM", "OBSERVACAO_ITEM"];
+    const cabecalho = ["DATA", "TURNO", "OPERADOR", "TAG", "MODELO", "AREA", "RESULTADO_FINAL", "ITEM", "STATUS_ITEM", "OBSERVACAO_ITEM"];
     const linhas = checklists.flatMap((c) =>
       respostasBanco
         .filter((r) => r.checklist_id === c.id)
-        .map((r) => [c.data_checklist, c.operador_nome, c.tag, c.modelo || "", c.area || "", c.resultado_final, r.item_descricao, r.status, r.observacao || ""])
+        .map((r) => [c.data_checklist, c.turno_nome || nomeTurno((c.turno_codigo || "T1") as TurnoCodigo), c.operador_nome, c.tag, c.modelo || "", c.area || "", c.resultado_final, r.item_descricao, r.status, r.observacao || ""])
     );
     const csv = [cabecalho, ...linhas].map((linha) => linha.map((v) => `"${String(v || "").replaceAll('"', '""')}"`).join(";")).join("\n");
     baixarArquivo(`checklists_detalhado_${data}.csv`, csv);
@@ -1234,8 +1298,8 @@ export default function Home() {
 
         <section style={isMobile ? styles.kpiGridMobile : styles.kpiGrid}>
           <Card titulo="Obrigatórios" valor={equipamentosObrigatorios.length} />
-          <Card titulo="Concluídos na data" valor={concluidosHoje} />
-          <Card titulo="Pendentes obrigatórios" valor={pendentesHoje.length} />
+          <Card titulo={`Concluídos ${nomeTurno(turnoSelecionado)}`} valor={concluidosHoje} />
+          <Card titulo={`Pendentes ${nomeTurno(turnoSelecionado)}`} valor={pendentesHoje.length} />
           <Card titulo="Com avaria" valor={comAvariaHoje.length} destaque={comAvariaHoje.length > 0} />
         </section>
 
@@ -1247,6 +1311,12 @@ export default function Home() {
             </Campo>
             <Campo label="Data">
               <input type="date" value={data} onChange={(e) => setData(e.target.value)} style={styles.input} />
+            </Campo>
+            <Campo label="Turno">
+              <select value={turnoSelecionado} onChange={(e) => setTurnoSelecionado(e.target.value as TurnoCodigo)} style={styles.input}>
+                <option value="T1">Turno 1 - 06h</option>
+                <option value="T2">Turno 2 - 18h</option>
+              </select>
             </Campo>
             <Campo label="Área">
               <select value={area} onChange={(e) => setArea(e.target.value)} style={styles.input}>
@@ -1264,7 +1334,7 @@ export default function Home() {
             <h2 style={styles.boxTitulo}>Selecionar equipamento</h2>
             <div style={isMobile ? styles.listaEquipamentosMobile : styles.listaEquipamentos}>
               {equipamentosFiltrados.map((e) => {
-                const feito = tagsFeitasHoje.has(normalizar(e.tag));
+                const feito = tagsFeitasTurno.has(normalizar(e.tag));
                 return (
                   <button key={e.tag} onClick={() => selecionarEquipamento(e.tag)} style={styles.cardSelecao}>
                     <strong style={styles.tagMini}>{e.tag}</strong>
@@ -1273,7 +1343,7 @@ export default function Home() {
                     <small>{e.area || "LOCAL A DEFINIR"}</small>
                     {e.status_operacional === "EM_MANUTENCAO" && <span style={styles.badgeAtrasado}>Em manutenção</span>}
                     {e.checklist_obrigatorio === false && <span style={styles.badgeOpcional}>Não obrigatório</span>}
-                    {feito && <span style={styles.badgeConcluido}>Feito na data</span>}
+                    {feito && <span style={styles.badgeConcluido}>Feito neste turno</span>}
                   </button>
                 );
               })}
@@ -1287,7 +1357,9 @@ export default function Home() {
               <button onClick={() => setTelaOperador("LISTA")} style={styles.botaoCinza}>Voltar</button>
               <div>
                 <h2 style={{ margin: 0 }}>Checklist - {equipamentoSelecionado.tag}</h2>
-                <p style={{ marginTop: 6, color: "#475569" }}>Fotos no Storage e dados no banco.</p>
+                <p style={{ marginTop: 6, color: "#475569" }}>
+                  {nomeTurno(turnoSelecionado)} | Fotos no Storage e dados no banco.
+                </p>
               </div>
             </div>
 
@@ -1417,6 +1489,32 @@ export default function Home() {
               </div>
             </section>
 
+            <section style={styles.box}>
+              <h2 style={styles.boxTitulo}>Resumo por turno</h2>
+              <div style={isMobile ? styles.kpiGridMobile : styles.kpiGrid}>
+                <Card titulo="T1 - Feitos" valor={checklistsT1.length} />
+                <Card titulo="T1 - Pendentes" valor={pendentesT1.length} />
+                <Card titulo="T2 - Feitos" valor={checklistsT2.length} />
+                <Card titulo="T2 - Pendentes" valor={pendentesT2.length} />
+              </div>
+              <div style={isMobile ? styles.gridMobile : styles.grid2}>
+                <div style={styles.alertaItem}>
+                  <strong>Turno 1 - 06h</strong><br />
+                  Obrigatórios: {equipamentosObrigatorios.length}<br />
+                  Concluídos: {checklistsT1.length}<br />
+                  Pendentes: {pendentesT1.length}<br />
+                  Avarias: {avariasT1.length}
+                </div>
+                <div style={styles.alertaItem}>
+                  <strong>Turno 2 - 18h</strong><br />
+                  Obrigatórios: {equipamentosObrigatorios.length}<br />
+                  Concluídos: {checklistsT2.length}<br />
+                  Pendentes: {pendentesT2.length}<br />
+                  Avarias: {avariasT2.length}
+                </div>
+              </div>
+            </section>
+
             {(filtroAdmin === "TODOS" || filtroAdmin === "AVARIAS") && (
               <section style={styles.box}>
                 <h2 style={styles.boxTitulo}>Máquinas com avaria na data</h2>
@@ -1445,7 +1543,7 @@ export default function Home() {
 
             {(filtroAdmin === "TODOS" || filtroAdmin === "PENDENTES") && (
               <section style={styles.box}>
-                <h2 style={styles.boxTitulo}>Pendentes obrigatórios</h2>
+                <h2 style={styles.boxTitulo}>Pendentes obrigatórios - {nomeTurno(turnoSelecionado)}</h2>
                 <div style={isMobile ? styles.pendentesGridMobile : styles.pendentesGrid}>
                   {pendentesHoje.map((e) => (
                     <div key={e.tag} style={styles.pendenteItem}>
