@@ -236,6 +236,54 @@ function lerArquivoComoBase64(file: File): Promise<string> {
   });
 }
 
+function comprimirImagem(file: File, larguraMaxima = 1280, qualidade = 0.72): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (!file.type.startsWith("image/")) {
+      reject(new Error("Selecione apenas arquivos de imagem."));
+      return;
+    }
+
+    const reader = new FileReader();
+
+    reader.onload = () => {
+      const img = new Image();
+
+      img.onload = () => {
+        const escala = Math.min(1, larguraMaxima / img.width);
+        const largura = Math.round(img.width * escala);
+        const altura = Math.round(img.height * escala);
+
+        const canvas = document.createElement("canvas");
+        canvas.width = largura;
+        canvas.height = altura;
+
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          reject(new Error("Não foi possível processar a imagem."));
+          return;
+        }
+
+        ctx.drawImage(img, 0, 0, largura, altura);
+
+        // Sempre salva em JPEG para reduzir tamanho e evitar fotos enormes do tablet/celular.
+        const dataUrl = canvas.toDataURL("image/jpeg", qualidade);
+        resolve(dataUrl);
+      };
+
+      img.onerror = () => reject(new Error("Não foi possível ler a foto."));
+      img.src = String(reader.result || "");
+    };
+
+    reader.onerror = () => reject(new Error("Não foi possível carregar a foto."));
+    reader.readAsDataURL(file);
+  });
+}
+
+function tamanhoDataUrlMB(dataUrl: string) {
+  const base64 = dataUrl.split(",")[1] || "";
+  return (base64.length * 0.75) / (1024 * 1024);
+}
+
 function dataUrlParaBlob(dataUrl: string) {
   const [cabecalho, base64] = dataUrl.split(",");
   const mime = cabecalho.match(/data:(.*?);base64/)?.[1] || "image/jpeg";
@@ -286,7 +334,9 @@ async function enviarFotoStorage(dataUrl: string, pasta: string, nomeBase: strin
     .from("checklist-fotos")
     .upload(caminho, blob, { contentType: mime, upsert: true });
 
-  if (error) throw error;
+  if (error) {
+    throw new Error(`Erro ao enviar foto para o Storage: ${error.message}`);
+  }
 
   const { data } = supabase.storage.from("checklist-fotos").getPublicUrl(caminho);
   return data.publicUrl;
@@ -684,10 +734,28 @@ export default function Home() {
     const file = evento.target.files?.[0];
     if (!file) return;
 
-    const base64 = await lerArquivoComoBase64(file);
-    if (tipo === "EVIDENCIA") setFotoEvidencia(base64);
-    if (tipo === "HORIMETRO") setFotoHorimetro(base64);
-    evento.target.value = "";
+    setMensagem("");
+
+    try {
+      setCarregando(true);
+
+      const fotoComprimida = await comprimirImagem(file, 1280, 0.72);
+      const tamanhoMB = tamanhoDataUrlMB(fotoComprimida);
+
+      if (tamanhoMB > 2.5) {
+        throw new Error("A foto ainda ficou muito grande. Tente tirar uma foto mais próxima ou com menor resolução.");
+      }
+
+      if (tipo === "EVIDENCIA") setFotoEvidencia(fotoComprimida);
+      if (tipo === "HORIMETRO") setFotoHorimetro(fotoComprimida);
+
+      setMensagem(`Foto carregada e reduzida automaticamente (${tamanhoMB.toFixed(1)} MB).`);
+    } catch (err: any) {
+      setMensagem(`Erro ao carregar foto: ${err.message || err}`);
+    } finally {
+      setCarregando(false);
+      evento.target.value = "";
+    }
   }
 
   async function finalizarChecklist() {
@@ -1433,10 +1501,10 @@ export default function Home() {
 
             <section style={styles.boxInterno}>
               <h3 style={styles.subtituloSecao}>Fotos</h3>
-              <p style={styles.textoApoio}>A foto será enviada para o Supabase Storage. O banco salvará apenas o link.</p>
+              <p style={styles.textoApoio}>Toque no campo de foto para abrir a câmera do celular/tablet. A foto será reduzida automaticamente antes do envio.</p>
               <div style={isMobile ? styles.gridMobile : styles.grid2}>
-                <Campo label="Foto do equipamento/avaria">
-                  <input type="file" accept="image/*" onChange={(e) => carregarFoto(e, "EVIDENCIA")} style={styles.input} />
+                <Campo label="Tirar foto do equipamento/avaria">
+                  <input type="file" accept="image/*" capture="environment" onChange={(e) => carregarFoto(e, "EVIDENCIA")} style={styles.input} />
                 </Campo>
                 {fotoEvidencia && <PreviewImagem titulo="Prévia evidência" src={fotoEvidencia} onRemover={() => setFotoEvidencia("")} />}
               </div>
@@ -1449,8 +1517,8 @@ export default function Home() {
                   <Campo label="Leitura / descrição do horímetro">
                     <input value={horimetroLeitura} onChange={(e) => setHorimetroLeitura(e.target.value)} placeholder="Ex.: 1245,6 h - painel normal" style={styles.input} />
                   </Campo>
-                  <Campo label="Foto do horímetro">
-                    <input type="file" accept="image/*" onChange={(e) => carregarFoto(e, "HORIMETRO")} style={styles.input} />
+                  <Campo label="Tirar foto do horímetro">
+                    <input type="file" accept="image/*" capture="environment" onChange={(e) => carregarFoto(e, "HORIMETRO")} style={styles.input} />
                   </Campo>
                 </div>
                 {fotoHorimetro && <PreviewImagem titulo="Prévia horímetro" src={fotoHorimetro} onRemover={() => setFotoHorimetro("")} />}
