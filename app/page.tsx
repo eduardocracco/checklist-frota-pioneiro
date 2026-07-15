@@ -151,12 +151,44 @@ const equipamentoVazio: Equipamento = {
   origem: "Cadastro manual",
 };
 
+const FUSO_HORARIO_APP = "America/Sao_Paulo";
+
+function partesDataHoraBrasil() {
+  const partes = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: FUSO_HORARIO_APP,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date());
+
+  const valor = (tipo: string) => partes.find((p) => p.type === tipo)?.value || "";
+
+  return {
+    ano: valor("year"),
+    mes: valor("month"),
+    dia: valor("day"),
+    hora: valor("hour") === "24" ? "00" : valor("hour"),
+    minuto: valor("minute"),
+    segundo: valor("second"),
+  };
+}
+
 function hojeISO() {
-  return new Date().toISOString().slice(0, 10);
+  const p = partesDataHoraBrasil();
+  return `${p.ano}-${p.mes}-${p.dia}`;
+}
+
+function horaBrasil() {
+  const p = partesDataHoraBrasil();
+  return `${p.hora}:${p.minuto}:${p.segundo}`;
 }
 
 function turnoAutomatico(): TurnoCodigo {
-  const hora = new Date().getHours();
+  const hora = Number(partesDataHoraBrasil().hora);
   return hora < 15 ? "T1" : "T2";
 }
 
@@ -585,7 +617,7 @@ export default function Home() {
   const pendentesHoje = equipamentosObrigatorios.filter((e) => !tagsFeitasTurno.has(normalizar(e.tag)));
   const concluidosHoje = checklistsTurnoSelecionado.filter((c) => equipamentosObrigatorios.some((e) => normalizar(e.tag) === normalizar(c.tag))).length;
   const comAvariaHoje = checklistsTurnoSelecionado.filter((c) => c.resultado_final === "COM AVARIA");
-  const horaAtual = new Date().getHours();
+  const horaAtual = Number(partesDataHoraBrasil().hora);
 
   const checklistsT1 = checklistsDoDia.filter((c) => (c.turno_codigo || "T1") === "T1");
   const checklistsT2 = checklistsDoDia.filter((c) => (c.turno_codigo || "T1") === "T2");
