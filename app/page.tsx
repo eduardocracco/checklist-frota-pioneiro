@@ -14,6 +14,7 @@ type Perfil = "ADMIN" | "OPERADOR";
 type StatusItem = "OK" | "NÃO OK" | "N/A" | "";
 type TelaLogin = "ENTRAR" | "CRIAR";
 type TurnoCodigo = "T1" | "T2";
+type ModuloEquipamento = "FROTA" | "MONOVIA" | "TODOS";
 
 type PerfilUsuario = {
   id?: string;
@@ -29,6 +30,7 @@ type Equipamento = {
   tag: string;
   tipo?: string;
   tipo_equipamento: string;
+  modulo?: ModuloEquipamento;
   modelo?: string;
   numero_serie?: string;
   local_correto?: string;
@@ -152,6 +154,21 @@ type OsCmms = {
   importado_em?: string;
 };
 
+type AgendaManutencao = {
+  id?: string;
+  tag: string;
+  tag_normalizada?: string;
+  equipamento_id?: string | null;
+  modulo: "FROTA" | "MONOVIA";
+  data_programada: string;
+  tipo_manutencao: string;
+  descricao?: string;
+  status: "PROGRAMADO" | "CONCLUIDO" | "CANCELADO";
+  criado_por?: string;
+  criado_em?: string;
+  atualizado_em?: string;
+};
+
 const itensFallback: ChecklistItemPadrao[] = [
   { numero: 1, descricao: "Estado geral do equipamento / avarias visíveis" },
   { numero: 2, descricao: "Rodas, pneus e rodízios sem desgaste excessivo ou travamento" },
@@ -174,6 +191,7 @@ const equipamentoVazio: Equipamento = {
   tag: "",
   tipo: "NOVA",
   tipo_equipamento: "",
+  modulo: "FROTA",
   modelo: "",
   numero_serie: "",
   local_correto: "",
@@ -352,6 +370,68 @@ function classificarAlertaCmms(os: OsCmms, hoje = hojeISO()) {
     nivel: "AVISO",
     titulo: "OS em aberto",
     mensagem: "Este equipamento possui ordem de manutenção aberta no CMMS.",
+  };
+}
+
+function nomeModulo(modulo: ModuloEquipamento) {
+  if (modulo === "FROTA") return "Frota";
+  if (modulo === "MONOVIA") return "Monovia / Talha";
+  return "Todos";
+}
+
+function moduloDoEquipamento(e: { modulo?: ModuloEquipamento; tipo_equipamento?: string; modelo?: string; tag?: string }) {
+  if (e.modulo === "FROTA" || e.modulo === "MONOVIA") return e.modulo;
+
+  const texto = normalizar(`${e.tag || ""} ${e.tipo_equipamento || ""} ${e.modelo || ""}`);
+  if (
+    texto.includes("MONOVIA") ||
+    texto.includes("TALHA") ||
+    texto.includes("PONTE") ||
+    texto.includes("GUINCHO") ||
+    texto.includes("ELEVACAO")
+  ) {
+    return "MONOVIA";
+  }
+
+  return "FROTA";
+}
+
+function agendaManutencaoAtiva(agenda: AgendaManutencao) {
+  const status = normalizar(agenda.status || "");
+  return !(status.includes("CONCL") || status.includes("CANCEL"));
+}
+
+function dataISOParaBR(data: string) {
+  const texto = String(data || "").trim();
+  const match = texto.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) return texto || "Não informada";
+  return `${match[3]}/${match[2]}/${match[1]}`;
+}
+
+function classificarAlertaAgenda(agenda: AgendaManutencao, hoje = hojeISO()) {
+  const tipo = agenda.tipo_manutencao || "Manutenção programada";
+  const data = dataISOParaBR(agenda.data_programada);
+
+  if (agenda.data_programada && agenda.data_programada < hoje) {
+    return {
+      nivel: "CRITICO",
+      titulo: `${tipo} atrasada`,
+      mensagem: `Este equipamento deveria ter sido levado para manutenção no dia ${data}. Entre em contato com a manutenção para programação.`,
+    };
+  }
+
+  if (agenda.data_programada === hoje) {
+    return {
+      nivel: "CRITICO",
+      titulo: `${tipo} programada para hoje`,
+      mensagem: `Este equipamento deve ser levado para manutenção hoje (${data}). Entre em contato com a manutenção antes de operar.`,
+    };
+  }
+
+  return {
+    nivel: "AVISO",
+    titulo: `${tipo} programada`,
+    mensagem: `Este equipamento deve ser levado para manutenção no dia ${data}. Será feita ${tipo.toLowerCase()}.`,
   };
 }
 
@@ -581,6 +661,7 @@ export default function Home() {
   const [decisoesNA, setDecisoesNA] = useState<DecisaoNA[]>([]);
   const [paradasManutencao, setParadasManutencao] = useState<ParadaManutencao[]>([]);
   const [osCmms, setOsCmms] = useState<OsCmms[]>([]);
+  const [agendaManutencao, setAgendaManutencao] = useState<AgendaManutencao[]>([]);
   const [resultadoImportacaoCMMS, setResultadoImportacaoCMMS] = useState<{
     total: number;
     importadas: number;
@@ -589,7 +670,14 @@ export default function Home() {
     arquivo: string;
   } | null>(null);
 
+  const [agendaModulo, setAgendaModulo] = useState<ModuloEquipamento>("FROTA");
+  const [agendaTag, setAgendaTag] = useState("");
+  const [agendaDataProgramada, setAgendaDataProgramada] = useState(hojeISO());
+  const [agendaTipo, setAgendaTipo] = useState("Preventiva");
+  const [agendaDescricao, setAgendaDescricao] = useState("");
+
   const [operador, setOperador] = useState("");
+  const [moduloSelecionado, setModuloSelecionado] = useState<ModuloEquipamento>("FROTA");
   const [data, setData] = useState(hojeISO());
   const [turnoSelecionado, setTurnoSelecionado] = useState<TurnoCodigo>(turnoAutomatico());
   const [area, setArea] = useState("TODAS");
@@ -613,7 +701,7 @@ export default function Home() {
   const [equipamentoEdicao, setEquipamentoEdicao] = useState<Equipamento>(equipamentoVazio);
   const [editandoTag, setEditandoTag] = useState("");
   const [buscaCadastro, setBuscaCadastro] = useState("");
-  const [filtroAdmin, setFiltroAdmin] = useState<"TODOS" | "AVARIAS" | "PENDENTES" | "CONCLUIDOS" | "RELATORIOS" | "CMMS">("TODOS");
+  const [filtroAdmin, setFiltroAdmin] = useState<"TODOS" | "AVARIAS" | "PENDENTES" | "CONCLUIDOS" | "RELATORIOS" | "CMMS" | "AGENDA">("TODOS");
   const [tagReservaSelecionada, setTagReservaSelecionada] = useState("");
   const [observacaoAdminParada, setObservacaoAdminParada] = useState("");
 
@@ -767,7 +855,7 @@ export default function Home() {
   async function carregarDados() {
     setMensagem("");
 
-    const [eqs, itens, itensTodos, chks, resps, decs, pars, usersApp, osImportadas] = await Promise.all([
+    const [eqs, itens, itensTodos, chks, resps, decs, pars, usersApp, osImportadas, agendaProg] = await Promise.all([
       supabaseRequest<Equipamento[]>("equipamentos?select=*&order=tag.asc"),
       supabaseRequest<ChecklistItemPadrao[]>("checklist_itens_padrao?select=numero,descricao,ativo&ativo=eq.true&order=numero.asc"),
       supabaseRequest<ChecklistItemPadrao[]>("checklist_itens_padrao?select=numero,descricao,ativo&order=numero.asc"),
@@ -777,6 +865,7 @@ export default function Home() {
       supabaseRequest<ParadaManutencao[]>("paradas_manutencao?select=*&status=neq.FINALIZADA&order=criado_em.desc"),
       supabaseRequest<PerfilUsuario[]>("usuarios_app?select=*&order=nome.asc"),
       supabaseRequest<OsCmms[]>("os_cmms?select=*&order=importado_em.desc&limit=5000").catch(() => []),
+      supabaseRequest<AgendaManutencao[]>("agenda_manutencao?select=*&order=data_programada.asc&limit=3000").catch(() => []),
     ]);
 
     setEquipamentos(eqs || []);
@@ -788,6 +877,7 @@ export default function Home() {
     setParadasManutencao(pars || []);
     setUsuariosApp(usersApp || []);
     setOsCmms(osImportadas || []);
+    setAgendaManutencao(agendaProg || []);
   }
 
     const areas = useMemo(() => {
@@ -796,11 +886,12 @@ export default function Home() {
 
   const equipamentosFiltrados = useMemo(() => {
     return equipamentos.filter((e) => {
+      const passaModulo = moduloSelecionado === "TODOS" || moduloDoEquipamento(e) === moduloSelecionado;
       const passaArea = area === "TODAS" || e.area === area;
       const texto = `${e.tag} ${e.tipo_equipamento} ${e.modelo || ""} ${e.numero_serie || ""} ${e.local_correto || ""} ${e.area || ""}`;
-      return passaArea && normalizar(texto).includes(normalizar(busca));
+      return passaModulo && passaArea && normalizar(texto).includes(normalizar(busca));
     });
-  }, [equipamentos, area, busca]);
+  }, [equipamentos, moduloSelecionado, area, busca]);
 
   const equipamentosCadastroFiltrados = useMemo(() => {
     const termo = normalizar(buscaCadastro);
@@ -836,6 +927,18 @@ export default function Home() {
     return mapa;
   }, [osCmmsAbertas]);
 
+  const agendaManutencaoAtivaLista = useMemo(() => agendaManutencao.filter(agendaManutencaoAtiva), [agendaManutencao]);
+
+  const tagsComAgendaManutencao = useMemo(() => {
+    const mapa = new Map<string, number>();
+    agendaManutencaoAtivaLista.forEach((ag) => {
+      const chave = normalizarTagOS(ag.tag);
+      if (!chave) return;
+      mapa.set(chave, (mapa.get(chave) || 0) + 1);
+    });
+    return mapa;
+  }, [agendaManutencaoAtivaLista]);
+
   const alertasManutencaoSelecionado = useMemo(() => {
     if (!equipamentoSelecionado) return [];
     const tagAtual = normalizarTagOS(equipamentoSelecionado.tag);
@@ -847,11 +950,37 @@ export default function Home() {
       .slice(0, 5);
   }, [equipamentoSelecionado, osCmmsAbertas]);
 
+  const alertasAgendaSelecionado = useMemo(() => {
+    if (!equipamentoSelecionado) return [];
+    const tagAtual = normalizarTagOS(equipamentoSelecionado.tag);
+
+    return agendaManutencaoAtivaLista
+      .filter((ag) => normalizarTagOS(ag.tag) === tagAtual)
+      .map((ag) => ({ agenda: ag, alerta: classificarAlertaAgenda(ag) }))
+      .sort((a, b) => (a.alerta.nivel === "CRITICO" ? -1 : 1) - (b.alerta.nivel === "CRITICO" ? -1 : 1))
+      .slice(0, 5);
+  }, [equipamentoSelecionado, agendaManutencaoAtivaLista]);
+
+  const agendaEquipamentosDisponiveis = useMemo(() => {
+    return equipamentos
+      .filter((e) => e.ativo !== false)
+      .filter((e) => agendaModulo === "TODOS" || moduloDoEquipamento(e) === agendaModulo)
+      .sort((a, b) => normalizar(a.tag).localeCompare(normalizar(b.tag)));
+  }, [equipamentos, agendaModulo]);
+
+  const agendaAtrasada = useMemo(() => agendaManutencaoAtivaLista.filter((ag) => ag.data_programada && ag.data_programada < hojeISO()), [agendaManutencaoAtivaLista]);
+  const agendaHoje = useMemo(() => agendaManutencaoAtivaLista.filter((ag) => ag.data_programada === hojeISO()), [agendaManutencaoAtivaLista]);
+
   const osCmmsSemVinculo = useMemo(() => osCmms.filter((os) => !os.equipamento_id), [osCmms]);
   const checklistsDoDia = checklists.filter((c) => c.data_checklist === data);
   const checklistsTurnoSelecionado = checklistsDoDia.filter((c) => (c.turno_codigo || "T1") === turnoSelecionado);
   const tagsFeitasTurno = new Set(checklistsTurnoSelecionado.map((c) => normalizar(c.tag)));
-  const equipamentosObrigatorios = equipamentos.filter((e) => e.ativo !== false && e.checklist_obrigatorio !== false && e.status_operacional !== "EM_MANUTENCAO");
+  const equipamentosObrigatorios = equipamentos.filter((e) =>
+    e.ativo !== false &&
+    e.checklist_obrigatorio !== false &&
+    e.status_operacional !== "EM_MANUTENCAO" &&
+    (moduloSelecionado === "TODOS" || moduloDoEquipamento(e) === moduloSelecionado)
+  );
   const pendentesHoje = equipamentosObrigatorios.filter((e) => !tagsFeitasTurno.has(normalizar(e.tag)));
   const concluidosHoje = checklistsTurnoSelecionado.filter((c) => equipamentosObrigatorios.some((e) => normalizar(e.tag) === normalizar(c.tag))).length;
   const comAvariaHoje = checklistsTurnoSelecionado.filter((c) => c.resultado_final === "COM AVARIA");
@@ -1145,7 +1274,7 @@ export default function Home() {
       return setMensagem("Informe o número da OS para equipamento parado/em manutenção.");
     }
 
-    if (alertasManutencaoSelecionado.length && !confirmacaoAlertaManutencao) {
+    if ((alertasManutencaoSelecionado.length || alertasAgendaSelecionado.length) && !confirmacaoAlertaManutencao) {
       return setMensagem("Confirme que está ciente do alerta de manutenção antes de finalizar o checklist.");
     }
 
@@ -1258,6 +1387,7 @@ export default function Home() {
       tag: equipamentoEdicao.tag.trim().toUpperCase(),
       tipo: equipamentoEdicao.tipo || "NOVA",
       tipo_equipamento: equipamentoEdicao.tipo_equipamento.trim().toUpperCase(),
+      modulo: moduloDoEquipamento(equipamentoEdicao) === "MONOVIA" ? "MONOVIA" : "FROTA",
       modelo: equipamentoEdicao.modelo?.trim().toUpperCase() || "",
       numero_serie: equipamentoEdicao.numero_serie?.trim().toUpperCase() || "",
       local_correto: equipamentoEdicao.local_correto?.trim().toUpperCase() || "",
@@ -1281,6 +1411,74 @@ export default function Home() {
       setMensagem(`Cadastro ${payload.tag} salvo.`);
     } catch (err: any) {
       setMensagem(`Erro ao salvar cadastro: ${err.message || err}`);
+    } finally {
+      setCarregando(false);
+    }
+  }
+
+  async function salvarAgendaManutencao() {
+    setMensagem("");
+
+    if (!isAdmin) return setMensagem("Somente Admin pode cadastrar agenda de manutenção.");
+    if (!agendaTag) return setMensagem("Selecione um equipamento para a agenda.");
+    if (!agendaDataProgramada) return setMensagem("Informe a data programada.");
+    if (!agendaTipo.trim()) return setMensagem("Informe o tipo de manutenção.");
+
+    const equipamento = equipamentos.find((e) => e.tag === agendaTag);
+    if (!equipamento) return setMensagem("Equipamento não encontrado.");
+
+    const modulo = moduloDoEquipamento(equipamento) === "MONOVIA" ? "MONOVIA" : "FROTA";
+
+    const payload: AgendaManutencao = {
+      tag: equipamento.tag,
+      tag_normalizada: normalizarTagOS(equipamento.tag),
+      equipamento_id: equipamento.id || null,
+      modulo,
+      data_programada: agendaDataProgramada,
+      tipo_manutencao: agendaTipo.trim(),
+      descricao: agendaDescricao.trim(),
+      status: "PROGRAMADO",
+      criado_por: perfilUsuario?.nome || "ADMIN",
+    };
+
+    try {
+      setCarregando(true);
+
+      await supabaseRequest<AgendaManutencao[]>("agenda_manutencao", {
+        method: "POST",
+        headers: { Prefer: "return=representation" },
+        body: JSON.stringify(payload),
+      });
+
+      await carregarDados();
+      setAgendaDescricao("");
+      setMensagem(`Agenda cadastrada para ${equipamento.tag} em ${dataISOParaBR(agendaDataProgramada)}.`);
+    } catch (err: any) {
+      setMensagem(`Erro ao salvar agenda: ${err.message || err}`);
+    } finally {
+      setCarregando(false);
+    }
+  }
+
+  async function atualizarStatusAgenda(id: string | undefined, status: "CONCLUIDO" | "CANCELADO" | "PROGRAMADO") {
+    if (!id) return;
+    if (!isAdmin) return setMensagem("Somente Admin pode alterar agenda.");
+
+    try {
+      setCarregando(true);
+
+      await supabaseRequest<AgendaManutencao[]>(`agenda_manutencao?id=eq.${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          status,
+          atualizado_em: new Date().toISOString(),
+        }),
+      });
+
+      await carregarDados();
+      setMensagem(status === "CONCLUIDO" ? "Agenda marcada como concluída." : status === "CANCELADO" ? "Agenda cancelada." : "Agenda reaberta.");
+    } catch (err: any) {
+      setMensagem(`Erro ao atualizar agenda: ${err.message || err}`);
     } finally {
       setCarregando(false);
     }
@@ -1940,6 +2138,13 @@ export default function Home() {
             <Campo label="Nome completo">
               <input value={operador} onChange={(e) => setOperador(e.target.value)} placeholder="Nome completo" style={styles.input} />
             </Campo>
+            <Campo label="Módulo">
+              <select value={moduloSelecionado} onChange={(e) => setModuloSelecionado(e.target.value as ModuloEquipamento)} style={styles.input}>
+                <option value="FROTA">Frota</option>
+                <option value="MONOVIA">Monovia / Talha</option>
+                <option value="TODOS">Todos</option>
+              </select>
+            </Campo>
             <Campo label="Data">
               <input type="date" value={data} onChange={(e) => setData(e.target.value)} style={styles.input} />
             </Campo>
@@ -1970,10 +2175,12 @@ export default function Home() {
                   <button key={e.tag} onClick={() => selecionarEquipamento(e.tag)} style={styles.cardSelecao}>
                     <strong style={styles.tagMini}>{e.tag}</strong>
                     <span>{e.tipo_equipamento}</span>
+                    <small>Módulo: {nomeModulo(moduloDoEquipamento(e))}</small>
                     <small>Modelo: {e.modelo || "Não informado"}</small>
                     <small>{e.area || "LOCAL A DEFINIR"}</small>
                     {e.status_operacional === "EM_MANUTENCAO" && <span style={styles.badgeAtrasado}>Em manutenção</span>}
                     {tagsComAlertaCmms.has(normalizarTagOS(e.tag)) && <span style={styles.badgeAtrasado}>Manutenção pendente</span>}
+                    {tagsComAgendaManutencao.has(normalizarTagOS(e.tag)) && <span style={styles.badgeAguardando}>Manutenção programada</span>}
                     {e.checklist_obrigatorio === false && <span style={styles.badgeOpcional}>Não obrigatório</span>}
                     {feito && <span style={styles.badgeConcluido}>Feito neste turno</span>}
                   </button>
@@ -1998,6 +2205,7 @@ export default function Home() {
             <div style={isMobile ? styles.infoEquipamentoGridMobile : styles.infoEquipamentoGrid}>
               <Info label="TAG" valor={equipamentoSelecionado.tag} destaque />
               <Info label="Tipo" valor={equipamentoSelecionado.tipo_equipamento || "Não informado"} />
+              <Info label="Módulo" valor={nomeModulo(moduloDoEquipamento(equipamentoSelecionado))} />
               <Info label="Modelo" valor={equipamentoSelecionado.modelo || "Não informado"} />
               <Info label="Série" valor={equipamentoSelecionado.numero_serie || "Não informado"} />
               <Info label="Local" valor={equipamentoSelecionado.local_correto || "LOCAL A DEFINIR"} destaque />
@@ -2015,6 +2223,25 @@ export default function Home() {
                     Tipo: {os.tipo_manut || "Não informado"} | Status: {os.status || "Não informado"}<br />
                     Data programada: {os.dt_progr || "Não informada"}<br />
                     Descrição: {os.descricao || os.desc_codigo_parada || "Sem descrição"}
+                  </div>
+                ))}
+                <label style={styles.checkLabel}>
+                  <input type="checkbox" checked={confirmacaoAlertaManutencao} onChange={(e) => setConfirmacaoAlertaManutencao(e.target.checked)} />
+                  Estou ciente do alerta de manutenção deste equipamento.
+                </label>
+              </section>
+            )}
+
+            {alertasAgendaSelecionado.length > 0 && (
+              <section style={styles.alertaManutencaoBox}>
+                <h3 style={styles.subtituloSecao}>Calendário de manutenção</h3>
+                <p style={styles.textoApoio}>Existe manutenção programada no calendário interno para este equipamento.</p>
+                {alertasAgendaSelecionado.map(({ agenda, alerta }) => (
+                  <div key={`${agenda.id || agenda.tag}-${agenda.data_programada}`} style={styles.alertaItem}>
+                    <strong>{alerta.titulo}</strong><br />
+                    {alerta.mensagem}<br />
+                    Data programada: {dataISOParaBR(agenda.data_programada)}<br />
+                    Descrição: {agenda.descricao || "Sem observação"}
                   </div>
                 ))}
                 <label style={styles.checkLabel}>
@@ -2135,11 +2362,91 @@ export default function Home() {
                 <button onClick={exportarDetalhadoCSV} style={styles.botaoCinza}>Exportar detalhado CSV</button>
               </div>
               <div style={styles.filtroLinha}>
-                {(["TODOS", "AVARIAS", "PENDENTES", "CONCLUIDOS", "RELATORIOS", "CMMS"] as const).map((f) => (
+                {(["TODOS", "AVARIAS", "PENDENTES", "CONCLUIDOS", "RELATORIOS", "CMMS", "AGENDA"] as const).map((f) => (
                   <button key={f} onClick={() => setFiltroAdmin(f)} style={filtroAdmin === f ? styles.filtroAtivo : styles.filtroBotao}>{f}</button>
                 ))}
               </div>
             </section>
+
+            {filtroAdmin === "AGENDA" && (
+              <section style={styles.box}>
+                <h2 style={styles.boxTitulo}>Calendário de manutenção</h2>
+                <p style={styles.textoApoio}>
+                  Área exclusiva do ADMIN. Cadastre preventivas ou programações para que o operador veja o aviso ao selecionar o equipamento.
+                </p>
+
+                <div style={isMobile ? styles.gridMobile : styles.grid4}>
+                  <Card titulo="Programadas" valor={agendaManutencaoAtivaLista.length} />
+                  <Card titulo="Atrasadas" valor={agendaAtrasada.length} destaque={agendaAtrasada.length > 0} />
+                  <Card titulo="Hoje" valor={agendaHoje.length} destaque={agendaHoje.length > 0} />
+                  <Card titulo="Módulo" valor={nomeModulo(agendaModulo)} />
+                </div>
+
+                <section style={styles.boxInternoDestaque}>
+                  <h3 style={styles.subtituloSecao}>Nova programação</h3>
+                  <div style={isMobile ? styles.gridMobile : styles.grid4}>
+                    <Campo label="Módulo">
+                      <select value={agendaModulo} onChange={(e) => { setAgendaModulo(e.target.value as ModuloEquipamento); setAgendaTag(""); }} style={styles.input}>
+                        <option value="FROTA">Frota</option>
+                        <option value="MONOVIA">Monovia / Talha</option>
+                        <option value="TODOS">Todos</option>
+                      </select>
+                    </Campo>
+                    <Campo label="Equipamento">
+                      <select value={agendaTag} onChange={(e) => setAgendaTag(e.target.value)} style={styles.input}>
+                        <option value="">Selecione</option>
+                        {agendaEquipamentosDisponiveis.map((e) => (
+                          <option key={e.tag} value={e.tag}>{e.tag} - {e.tipo_equipamento}</option>
+                        ))}
+                      </select>
+                    </Campo>
+                    <Campo label="Data programada">
+                      <input type="date" value={agendaDataProgramada} onChange={(e) => setAgendaDataProgramada(e.target.value)} style={styles.input} />
+                    </Campo>
+                    <Campo label="Tipo">
+                      <select value={agendaTipo} onChange={(e) => setAgendaTipo(e.target.value)} style={styles.input}>
+                        <option>Preventiva</option>
+                        <option>Inspeção</option>
+                        <option>Corretiva programada</option>
+                        <option>Troca programada</option>
+                      </select>
+                    </Campo>
+                  </div>
+                  <Campo label="Observação / serviço previsto">
+                    <textarea value={agendaDescricao} onChange={(e) => setAgendaDescricao(e.target.value)} style={styles.textarea} placeholder="Ex.: Preventiva geral, lubrificação, inspeção de segurança, revisão de freio..." />
+                  </Campo>
+                  <div style={styles.botoesLinha}>
+                    <button onClick={salvarAgendaManutencao} style={styles.botaoVerde}>Salvar programação</button>
+                  </div>
+                </section>
+
+                <section style={styles.boxInterno}>
+                  <h3 style={styles.subtituloSecao}>Programações ativas</h3>
+                  {agendaManutencaoAtivaLista.length === 0 && <p>Nenhuma programação ativa.</p>}
+                  <div style={styles.tabelaEquipamentos}>
+                    {agendaManutencaoAtivaLista.slice(0, 120).map((ag) => {
+                      const alerta = classificarAlertaAgenda(ag);
+                      return (
+                        <div key={ag.id || `${ag.tag}-${ag.data_programada}`} style={isMobile ? styles.linhaEquipamentoMobile : styles.linhaEquipamento}>
+                          <div>
+                            <strong>{ag.tag} - {ag.tipo_manutencao}</strong><br />
+                            Módulo: {nomeModulo(ag.modulo as ModuloEquipamento)} | Data: {dataISOParaBR(ag.data_programada)} | Status: {ag.status}<br />
+                            {ag.descricao || "Sem observação"}
+                          </div>
+                          <div>
+                            <span style={alerta.nivel === "CRITICO" ? styles.badgeAtrasado : styles.badgeAguardando}>{alerta.titulo}</span>
+                            <div style={styles.botoesLinha}>
+                              <button onClick={() => atualizarStatusAgenda(ag.id, "CONCLUIDO")} style={styles.botaoVerde}>Concluir</button>
+                              <button onClick={() => atualizarStatusAgenda(ag.id, "CANCELADO")} style={styles.botaoPerigo}>Cancelar</button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              </section>
+            )}
 
             {filtroAdmin === "CMMS" && (
               <section style={styles.box}>
@@ -2568,6 +2875,12 @@ export default function Home() {
               <div style={isMobile ? styles.gridMobile : styles.grid3}>
                 <Campo label="TAG"><input value={equipamentoEdicao.tag} onChange={(e) => setEquipamentoEdicao({ ...equipamentoEdicao, tag: e.target.value })} style={styles.input} /></Campo>
                 <Campo label="Tipo de equipamento"><input value={equipamentoEdicao.tipo_equipamento} onChange={(e) => setEquipamentoEdicao({ ...equipamentoEdicao, tipo_equipamento: e.target.value })} style={styles.input} /></Campo>
+                <Campo label="Módulo">
+                  <select value={moduloDoEquipamento(equipamentoEdicao)} onChange={(e) => setEquipamentoEdicao({ ...equipamentoEdicao, modulo: e.target.value as ModuloEquipamento })} style={styles.input}>
+                    <option value="FROTA">Frota</option>
+                    <option value="MONOVIA">Monovia / Talha</option>
+                  </select>
+                </Campo>
                 <Campo label="Modelo"><input value={equipamentoEdicao.modelo || ""} onChange={(e) => setEquipamentoEdicao({ ...equipamentoEdicao, modelo: e.target.value })} style={styles.input} /></Campo>
                 <Campo label="Nº série"><input value={equipamentoEdicao.numero_serie || ""} onChange={(e) => setEquipamentoEdicao({ ...equipamentoEdicao, numero_serie: e.target.value })} style={styles.input} /></Campo>
                 <Campo label="Local"><input value={equipamentoEdicao.local_correto || ""} onChange={(e) => setEquipamentoEdicao({ ...equipamentoEdicao, local_correto: e.target.value })} style={styles.input} /></Campo>
