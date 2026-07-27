@@ -2379,7 +2379,7 @@ export default function Home() {
                   <Card titulo="Programadas" valor={agendaManutencaoAtivaLista.length} />
                   <Card titulo="Atrasadas" valor={agendaAtrasada.length} destaque={agendaAtrasada.length > 0} />
                   <Card titulo="Hoje" valor={agendaHoje.length} destaque={agendaHoje.length > 0} />
-                  <Card titulo="Módulo" valor={nomeModulo(agendaModulo)} />
+                  <Card titulo="Módulo selecionado" valor={agendaEquipamentosDisponiveis.length} />
                 </div>
 
                 <section style={styles.boxInternoDestaque}>
