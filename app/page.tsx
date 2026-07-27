@@ -1309,13 +1309,19 @@ export default function Home() {
       return;
     }
 
+    const equipamentoAtual = equipamentoSelecionado;
+    if (!equipamentoAtual) {
+      setMensagem("Selecione um equipamento.");
+      return;
+    }
+
     const situacaoAlerta = situacaoEquipamento !== "EM OPERAÇÃO" && situacaoEquipamento !== "PARADO NA ÁREA";
     const resultado = respostas.some((r) => r.status === "NÃO OK") || situacaoAlerta || avariaImpedeUso ? "COM AVARIA" : "CONFORME";
 
     try {
       setCarregando(true);
 
-      const pastaFotos = `${data}/${normalizar(equipamentoSelecionado.tag)}`;
+      const pastaFotos = `${data}/${normalizar(equipamentoAtual.tag)}`;
       const fotoEvidenciaUrl = fotoEvidencia ? await enviarFotoStorage(fotoEvidencia, pastaFotos, "evidencia") : "";
       const fotoHorimetroUrl = fotoHorimetro ? await enviarFotoStorage(fotoHorimetro, pastaFotos, "horimetro") : "";
 
@@ -1326,13 +1332,13 @@ export default function Home() {
         turno_codigo: turnoSelecionado,
         turno_nome: nomeTurno(turnoSelecionado),
         horario_referencia: horarioReferenciaTurno(turnoSelecionado),
-        equipamento_id: equipamentoSelecionado.id || null,
-        tag: equipamentoSelecionado.tag,
-        tipo_equipamento: equipamentoSelecionado.tipo_equipamento,
-        modelo: equipamentoSelecionado.modelo || "",
-        numero_serie: equipamentoSelecionado.numero_serie || "",
-        local_correto: equipamentoSelecionado.local_correto || "",
-        area: equipamentoSelecionado.area || "",
+        equipamento_id: equipamentoAtual.id || null,
+        tag: equipamentoAtual.tag,
+        tipo_equipamento: equipamentoAtual.tipo_equipamento,
+        modelo: equipamentoAtual.modelo || "",
+        numero_serie: equipamentoAtual.numero_serie || "",
+        local_correto: equipamentoAtual.local_correto || "",
+        area: equipamentoAtual.area || "",
         situacao_equipamento: situacaoEquipamento,
         resultado_final: resultado,
         horimetro: horimetroLeitura,
@@ -1370,8 +1376,8 @@ export default function Home() {
           method: "POST",
           headers: { Prefer: "return=representation" },
           body: JSON.stringify({
-            equipamento_id: equipamentoSelecionado.id || null,
-            tag_original: equipamentoSelecionado.tag,
+            equipamento_id: equipamentoAtual.id || null,
+            tag_original: equipamentoAtual.tag,
             operador_nome: operador.trim(),
             operador_user_id: null,
             numero_os: numeroOS.trim(),
@@ -1381,7 +1387,7 @@ export default function Home() {
           }),
         });
 
-        await supabaseRequest<Equipamento[]>(`equipamentos?tag=eq.${encodeURIComponent(equipamentoSelecionado.tag)}`, {
+        await supabaseRequest<Equipamento[]>(`equipamentos?tag=eq.${encodeURIComponent(equipamentoAtual.tag)}`, {
           method: "PATCH",
           headers: { Prefer: "return=representation" },
           body: JSON.stringify({
@@ -1393,7 +1399,7 @@ export default function Home() {
 
       await carregarDados();
       setErrosChecklist([]);
-      setMensagem(`Checklist da ${equipamentoSelecionado.tag} finalizado no ${nomeTurno(turnoSelecionado)}: ${resultado}.`);
+      setMensagem(`Checklist da ${equipamentoAtual.tag} finalizado no ${nomeTurno(turnoSelecionado)}: ${resultado}.`);
       setTelaOperador("LISTA");
     } catch (err: any) {
       setMensagem(`Erro ao salvar checklist: ${err.message || err}`);
