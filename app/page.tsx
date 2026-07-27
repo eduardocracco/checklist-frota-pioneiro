@@ -1470,7 +1470,7 @@ export default function Home() {
     .link-foto { word-break: break-all; font-size: 11px; padding: 6px; border: 1px solid #e5e7eb; border-radius: 8px; }
     .sem-dados { color: #6b7280; }
     footer { margin-top: 24px; color: #6b7280; font-size: 11px; text-align: center; }
-    @page { size: A4 landscape; margin: 10mm; }
+    @page { size: A4 portrait; margin: 12mm; }
     @media print { body { background: #fff; } .pagina { max-width: none; padding: 0; } .barra-acoes { display: none; } a { color: #111827; text-decoration: none; } }
   </style>
 </head>
