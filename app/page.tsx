@@ -1977,67 +1977,395 @@ export default function Home() {
   <title>Relatório de Checklist de Equipamentos</title>
   <style>
     * { box-sizing: border-box; }
-    body { font-family: Arial, Helvetica, sans-serif; color: #111827; margin: 0; background: #f3f4f6; font-size: 11px; }
-    .pagina { width: 210mm; max-width: 210mm; margin: 0 auto; background: #fff; min-height: 100vh; padding: 8mm; }
-    .barra-acoes { display: flex; gap: 10px; justify-content: flex-end; margin-bottom: 10px; }
-    .barra-acoes button { border: none; background: #111; color: #FFE600; font-weight: 800; border-radius: 10px; padding: 10px 14px; cursor: pointer; }
-    header { border: 1px solid #d1d5db; border-top: 5px solid #FFE600; border-radius: 10px; padding: 8px; display: grid; grid-template-columns: 130px 1fr; gap: 10px; align-items: center; margin-bottom: 8px; break-inside: avoid; page-break-inside: avoid; }
-    header img { max-width: 120px; max-height: 46px; object-fit: contain; background: #000; border-radius: 8px; padding: 5px; }
-    h1 { margin: 0 0 5px; font-size: 17px; line-height: 1.1; }
-    .meta { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; font-size: 9px; color: #374151; }
-    .meta div, .dados-maquina div, .checklist-topo div { border: 1px solid #e5e7eb; border-radius: 6px; padding: 4px 5px; background: #f9fafb; min-height: 0; }
-    span { display: block; color: #6b7280; font-size: 8px; text-transform: uppercase; letter-spacing: .02em; margin-bottom: 1px; }
-    strong { color: #111827; }
-    .equipamento { border: 1px solid #d1d5db; border-radius: 10px; padding: 7px; margin: 8px 0; break-inside: auto; page-break-inside: auto; }
-    .equipamento h2 { margin: 0 0 5px; background: #111; color: #FFE600; padding: 5px 7px; border-radius: 7px; font-size: 15px; line-height: 1.1; }
-    .dados-maquina { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-bottom: 5px; }
-    .checklist { border-top: 1px solid #e5e7eb; padding-top: 5px; margin-top: 5px; break-inside: avoid; page-break-inside: avoid; }
-    .checklist-topo { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; margin-bottom: 5px; }
-    .observacao { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 5px; margin: 4px 0; font-size: 9px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 4px; font-size: 8.4px; line-height: 1.15; }
-    th { background: #111; color: #FFE600; text-align: left; }
-    th, td { border: 1px solid #d1d5db; padding: 2px 3px; vertical-align: top; }
-    tr:nth-child(even) td { background: #f9fafb; }
-    .status { font-weight: 800; text-align: center; white-space: nowrap; }
-    .ok { color: #166534; }
-    .nok { color: #991b1b; }
-    .na { color: #475569; }
-    .fotos { margin-top: 5px; display: grid; gap: 4px; break-inside: avoid; page-break-inside: avoid; }
-    .fotos h4 { margin: 0; font-size: 10px; }
-    .fotos-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 5px; }
-    .foto-card { border: 1px solid #e5e7eb; border-radius: 7px; padding: 4px; break-inside: avoid; page-break-inside: avoid; }
-    .foto-card img { display: block; margin-top: 3px; width: 100%; max-width: 100%; max-height: 86px; object-fit: contain; border-radius: 5px; border: 1px solid #e5e7eb; }
-    .link-foto { word-break: break-all; font-size: 8px; padding: 4px; border: 1px solid #e5e7eb; border-radius: 6px; }
-    .sem-dados { color: #6b7280; }
-    footer { margin-top: 6px; color: #6b7280; font-size: 8px; text-align: center; }
+    body {
+      font-family: Arial, Helvetica, sans-serif;
+      color: #111827;
+      margin: 0;
+      background: #f3f4f6;
+      font-size: 12px;
+    }
 
-    .modo-compacto { padding: 5mm; }
-    .modo-compacto header { grid-template-columns: 100px 1fr; padding: 6px; margin-bottom: 6px; }
-    .modo-compacto header img { max-width: 90px; max-height: 36px; padding: 4px; }
-    .modo-compacto h1 { font-size: 14px; margin-bottom: 3px; }
-    .modo-compacto .meta { grid-template-columns: repeat(6, 1fr); gap: 3px; font-size: 7.6px; }
-    .modo-compacto .meta div, .modo-compacto .dados-maquina div, .modo-compacto .checklist-topo div { padding: 2px 3px; border-radius: 4px; }
-    .modo-compacto span { font-size: 6.8px; margin-bottom: 0; }
-    .modo-compacto .equipamento { padding: 5px; margin: 5px 0; border-radius: 8px; }
-    .modo-compacto .equipamento h2 { font-size: 12px; padding: 4px 6px; margin-bottom: 4px; }
-    .modo-compacto .dados-maquina { gap: 3px; margin-bottom: 4px; }
-    .modo-compacto .checklist { padding-top: 4px; margin-top: 4px; }
-    .modo-compacto .checklist-topo { gap: 3px; margin-bottom: 4px; }
-    .modo-compacto .observacao { padding: 3px; margin: 3px 0; font-size: 8px; }
-    .modo-compacto table { font-size: 7.2px; line-height: 1.05; margin-top: 3px; }
-    .modo-compacto th, .modo-compacto td { padding: 1.6px 2px; }
-    .modo-compacto .fotos { margin-top: 4px; gap: 3px; }
-    .modo-compacto .fotos h4 { font-size: 9px; }
-    .modo-compacto .foto-card { padding: 3px; }
-    .modo-compacto .foto-card img { max-height: 70px; margin-top: 2px; }
-    .modo-compacto footer { margin-top: 4px; font-size: 7px; }
+    .pagina {
+      width: 210mm;
+      max-width: 210mm;
+      margin: 0 auto;
+      background: #fff;
+      min-height: 100vh;
+      padding: 9mm;
+    }
 
-    @page { size: A4 portrait; margin: 5mm; }
+    .barra-acoes {
+      display: flex;
+      gap: 10px;
+      justify-content: flex-end;
+      margin-bottom: 10px;
+    }
+
+    .barra-acoes button {
+      border: none;
+      background: #111;
+      color: #FFE600;
+      font-weight: 800;
+      border-radius: 10px;
+      padding: 10px 14px;
+      cursor: pointer;
+    }
+
+    header {
+      border: 1px solid #d1d5db;
+      border-top: 6px solid #FFE600;
+      border-radius: 12px;
+      padding: 8px;
+      display: grid;
+      grid-template-columns: 145px 1fr;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 8px;
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+
+    header img {
+      max-width: 135px;
+      max-height: 52px;
+      object-fit: contain;
+      background: #000;
+      border-radius: 8px;
+      padding: 5px;
+    }
+
+    h1 {
+      margin: 0 0 6px;
+      font-size: 18px;
+      line-height: 1.15;
+    }
+
+    .meta {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 5px;
+      font-size: 10px;
+      color: #374151;
+    }
+
+    .meta div,
+    .dados-maquina div,
+    .checklist-topo div {
+      border: 1px solid #d8dee8;
+      border-radius: 7px;
+      padding: 5px 6px;
+      background: #f9fafb;
+      min-height: 0;
+    }
+
+    span {
+      display: block;
+      color: #4b5563;
+      font-size: 8.5px;
+      text-transform: uppercase;
+      letter-spacing: .02em;
+      margin-bottom: 1px;
+    }
+
+    strong {
+      color: #111827;
+    }
+
+    .equipamento {
+      border: 1px solid #cbd5e1;
+      border-radius: 12px;
+      padding: 8px;
+      margin: 8px 0;
+      break-inside: auto;
+      page-break-inside: auto;
+    }
+
+    .equipamento h2 {
+      margin: 0 0 6px;
+      background: #111;
+      color: #FFE600;
+      padding: 6px 8px;
+      border-radius: 8px;
+      font-size: 16px;
+      line-height: 1.1;
+    }
+
+    .dados-maquina {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 5px;
+      margin-bottom: 6px;
+    }
+
+    .checklist {
+      border-top: 1px solid #e5e7eb;
+      padding-top: 6px;
+      margin-top: 6px;
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+
+    .checklist-topo {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 5px;
+      margin-bottom: 6px;
+    }
+
+    .observacao {
+      background: #f9fafb;
+      border: 1px solid #e5e7eb;
+      border-radius: 7px;
+      padding: 5px;
+      margin: 4px 0;
+      font-size: 10px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 4px;
+      font-size: 10.2px;
+      line-height: 1.25;
+      table-layout: fixed;
+    }
+
+    th {
+      background: #111;
+      color: #FFE600;
+      text-align: left;
+      font-size: 9.8px;
+    }
+
+    th, td {
+      border: 1px solid #bfc7d5;
+      padding: 3.5px 4px;
+      vertical-align: top;
+    }
+
+    tr:nth-child(even) td {
+      background: #f8fafc;
+    }
+
+    th:nth-child(1), td:nth-child(1) { width: 28px; text-align: center; }
+    th:nth-child(2), td:nth-child(2) { width: auto; }
+    th:nth-child(3), td:nth-child(3) { width: 70px; }
+    th:nth-child(4), td:nth-child(4) { width: 165px; }
+
+    .status {
+      font-weight: 900;
+      text-align: center;
+      white-space: nowrap;
+      font-size: 10.5px;
+    }
+
+    .ok {
+      color: #166534;
+    }
+
+    .nok {
+      color: #991b1b;
+    }
+
+    .na {
+      color: #475569;
+    }
+
+    .fotos {
+      margin-top: 7px;
+      display: grid;
+      gap: 6px;
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+
+    .fotos h4 {
+      margin: 0;
+      font-size: 12px;
+    }
+
+    .fotos-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 7px;
+    }
+
+    .foto-card {
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      padding: 6px;
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+
+    .foto-card span {
+      font-size: 9px;
+      color: #374151;
+      font-weight: 700;
+    }
+
+    .foto-card img {
+      display: block;
+      margin: 4px auto 0;
+      width: auto;
+      max-width: 100%;
+      max-height: 145px;
+      object-fit: contain;
+      border-radius: 6px;
+      border: 1px solid #d1d5db;
+    }
+
+    .link-foto {
+      word-break: break-all;
+      font-size: 9px;
+      padding: 5px;
+      border: 1px solid #e5e7eb;
+      border-radius: 7px;
+    }
+
+    .sem-dados {
+      color: #6b7280;
+    }
+
+    footer {
+      margin-top: 6px;
+      color: #6b7280;
+      font-size: 9px;
+      text-align: center;
+    }
+
+    .modo-compacto {
+      padding: 7mm;
+    }
+
+    .modo-compacto header {
+      grid-template-columns: 122px 1fr;
+      padding: 7px;
+      margin-bottom: 7px;
+    }
+
+    .modo-compacto header img {
+      max-width: 112px;
+      max-height: 42px;
+      padding: 4px;
+    }
+
+    .modo-compacto h1 {
+      font-size: 16px;
+      margin-bottom: 4px;
+    }
+
+    .modo-compacto .meta {
+      grid-template-columns: repeat(6, 1fr);
+      gap: 4px;
+      font-size: 8.6px;
+    }
+
+    .modo-compacto .meta div,
+    .modo-compacto .dados-maquina div,
+    .modo-compacto .checklist-topo div {
+      padding: 3px 4px;
+      border-radius: 5px;
+    }
+
+    .modo-compacto span {
+      font-size: 7.5px;
+      margin-bottom: 0;
+    }
+
+    .modo-compacto .equipamento {
+      padding: 6px;
+      margin: 6px 0;
+      border-radius: 9px;
+    }
+
+    .modo-compacto .equipamento h2 {
+      font-size: 14px;
+      padding: 5px 7px;
+      margin-bottom: 5px;
+    }
+
+    .modo-compacto .dados-maquina {
+      gap: 4px;
+      margin-bottom: 5px;
+    }
+
+    .modo-compacto .checklist {
+      padding-top: 5px;
+      margin-top: 5px;
+    }
+
+    .modo-compacto .checklist-topo {
+      gap: 4px;
+      margin-bottom: 5px;
+    }
+
+    .modo-compacto table {
+      font-size: 9.4px;
+      line-height: 1.18;
+      margin-top: 4px;
+    }
+
+    .modo-compacto th {
+      font-size: 9px;
+    }
+
+    .modo-compacto th,
+    .modo-compacto td {
+      padding: 2.5px 3px;
+    }
+
+    .modo-compacto th:nth-child(1), .modo-compacto td:nth-child(1) { width: 26px; }
+    .modo-compacto th:nth-child(3), .modo-compacto td:nth-child(3) { width: 64px; }
+    .modo-compacto th:nth-child(4), .modo-compacto td:nth-child(4) { width: 145px; }
+
+    .modo-compacto .status {
+      font-size: 9.8px;
+    }
+
+    .modo-compacto .fotos {
+      margin-top: 6px;
+      gap: 5px;
+    }
+
+    .modo-compacto .foto-card {
+      padding: 5px;
+    }
+
+    .modo-compacto .foto-card img {
+      max-height: 125px;
+      margin-top: 3px;
+    }
+
+    @page {
+      size: A4 portrait;
+      margin: 6mm;
+    }
+
     @media print {
-      html, body { width: 210mm; background: #fff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-      .pagina { width: 200mm; max-width: 200mm; min-height: auto; margin: 0; padding: 0; }
-      .barra-acoes { display: none; }
-      a { color: #111827; text-decoration: none; }
+      html, body {
+        width: 210mm;
+        background: #fff;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+
+      .pagina {
+        width: 198mm;
+        max-width: 198mm;
+        min-height: auto;
+        margin: 0;
+        padding: 0;
+      }
+
+      .barra-acoes {
+        display: none;
+      }
+
+      a {
+        color: #111827;
+        text-decoration: none;
+      }
     }
   </style>
 </head>
