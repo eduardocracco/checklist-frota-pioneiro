@@ -651,6 +651,7 @@ export default function Home() {
 
   const [carregando, setCarregando] = useState(false);
   const [mensagem, setMensagem] = useState("");
+  const [errosChecklist, setErrosChecklist] = useState<string[]>([]);
   const [isMobile, setIsMobile] = useState(false);
 
   const [equipamentos, setEquipamentos] = useState<Equipamento[]>([]);
@@ -1254,31 +1255,59 @@ export default function Home() {
 
   async function finalizarChecklist() {
     setMensagem("");
+    setErrosChecklist([]);
 
-    if (!perfilUsuario) return setMensagem("Usuário não autenticado.");
-    if (!operador.trim()) return setMensagem("Informe o nome completo.");
-    if (!equipamentoSelecionado) return setMensagem("Selecione um equipamento.");
-    if (respostas.some((r) => !r.status)) return setMensagem("Responda todos os itens do checklist.");
+    const erros: string[] = [];
+
+    if (!perfilUsuario) erros.push("Usuário não autenticado. Faça login novamente.");
+    if (!operador.trim()) erros.push("Informe o nome completo do operador.");
+    if (!equipamentoSelecionado) erros.push("Selecione um equipamento.");
+
+    const itensSemResposta = respostas.filter((r) => !r.status);
+    itensSemResposta.forEach((r) => {
+      erros.push(`Item ${r.item_numero} - ${r.item_descricao}: falta marcar OK, NÃO OK ou N/A.`);
+    });
 
     const naoOkSemObs = respostas.filter((r) => r.status === "NÃO OK" && !r.observacao.trim());
-    if (naoOkSemObs.length) return setMensagem("Todo item NÃO OK precisa de observação da avaria.");
+    naoOkSemObs.forEach((r) => {
+      erros.push(`Item ${r.item_numero} - ${r.item_descricao}: marcado NÃO OK, mas sem observação da avaria.`);
+    });
 
     const naSemObs = respostas.filter((r) => r.status === "N/A" && !r.observacao.trim());
-    if (naSemObs.length) return setMensagem("Todo N/A precisa de observação para validação do Admin.");
+    naSemObs.forEach((r) => {
+      erros.push(`Item ${r.item_numero} - ${r.item_descricao}: marcado N/A, mas sem justificativa.`);
+    });
 
-    if (ehEquipamentoEletrico(equipamentoSelecionado) && !horimetroLeitura.trim()) {
-      return setMensagem("Para equipamento elétrico, informe a leitura/descrição do horímetro.");
+    if (ehEquipamentoEletrico(equipamentoSelecionado || null) && !horimetroLeitura.trim()) {
+      erros.push("Falta informar a leitura/descrição do horímetro.");
+    }
+
+    if (ehEquipamentoEletrico(equipamentoSelecionado || null) && !fotoHorimetro) {
+      erros.push("Falta enviar/tirar foto do horímetro.");
+    }
+
+    const temAvariaNoChecklist = respostas.some((r) => r.status === "NÃO OK");
+    if ((temAvariaNoChecklist || avariaImpedeUso || situacaoEquipamento === "EM MANUTENÇÃO") && !fotoEvidencia) {
+      erros.push("Existe avaria ou situação de manutenção. Envie/tire uma foto do equipamento ou da avaria.");
     }
 
     if ((avariaImpedeUso || situacaoEquipamento === "EM MANUTENÇÃO") && !numeroOS.trim()) {
-      return setMensagem("Informe o número da OS para equipamento parado/em manutenção.");
+      erros.push("Informe o número da OS para equipamento parado/em manutenção.");
     }
 
     if ((alertasManutencaoSelecionado.length || alertasAgendaSelecionado.length) && !confirmacaoAlertaManutencao) {
-      return setMensagem("Confirme que está ciente do alerta de manutenção antes de finalizar o checklist.");
+      erros.push("Confirme que está ciente do alerta de manutenção antes de finalizar o checklist.");
     }
 
-    if (!confirmacaoOperador) return setMensagem("Marque a confirmação final do operador.");
+    if (!confirmacaoOperador) {
+      erros.push("Marque a confirmação final do operador.");
+    }
+
+    if (erros.length) {
+      setErrosChecklist(erros);
+      setMensagem("Não foi possível salvar. Corrija os itens listados abaixo.");
+      return;
+    }
 
     const situacaoAlerta = situacaoEquipamento !== "EM OPERAÇÃO" && situacaoEquipamento !== "PARADO NA ÁREA";
     const resultado = respostas.some((r) => r.status === "NÃO OK") || situacaoAlerta || avariaImpedeUso ? "COM AVARIA" : "CONFORME";
@@ -1363,6 +1392,7 @@ export default function Home() {
       }
 
       await carregarDados();
+      setErrosChecklist([]);
       setMensagem(`Checklist da ${equipamentoSelecionado.tag} finalizado no ${nomeTurno(turnoSelecionado)}: ${resultado}.`);
       setTelaOperador("LISTA");
     } catch (err: any) {
@@ -2347,6 +2377,17 @@ export default function Home() {
               </label>
             </div>
 
+            {errosChecklist.length > 0 && (
+              <section style={styles.erroChecklistBox}>
+                <strong>Não foi possível salvar. Corrija os itens abaixo:</strong>
+                <ul style={styles.erroChecklistLista}>
+                  {errosChecklist.map((erro, i) => (
+                    <li key={`${erro}-${i}`}>{erro}</li>
+                  ))}
+                </ul>
+              </section>
+            )}
+
             <div style={styles.botoesLinha}>
               <button onClick={finalizarChecklist} style={styles.botaoPreto}>Finalizar e salvar</button>
             </div>
@@ -3004,6 +3045,8 @@ const styles: Record<string, React.CSSProperties> = {
   botaoVerde: { padding: "11px 14px", borderRadius: 12, border: "none", background: "#15803d", color: "white", fontWeight: "bold", cursor: "pointer" },
   botaoPerigo: { padding: "9px 12px", borderRadius: 10, border: "none", background: "#dc2626", color: "white", fontWeight: "bold", cursor: "pointer", marginTop: 8 },
   confirmacaoBox: { background: "#ecfdf5", border: "1px solid #86efac", padding: 14, borderRadius: 14, marginTop: 14 },
+  erroChecklistBox: { background: "#fef2f2", border: "2px solid #ef4444", color: "#7f1d1d", padding: 14, borderRadius: 14, marginTop: 14 },
+  erroChecklistLista: { margin: "10px 0 0 18px", padding: 0, display: "grid", gap: 6, fontWeight: 700 },
   checkLabel: { display: "flex", gap: 10, alignItems: "center", fontWeight: 800 },
   filtroLinha: { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 16 },
   filtroBotao: { padding: "9px 12px", borderRadius: 999, border: "1px solid #cbd5e1", background: "white", color: "#0f172a", fontWeight: 800, cursor: "pointer" },
