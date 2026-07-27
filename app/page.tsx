@@ -301,6 +301,7 @@ function osCmmsEstaAberta(os: OsCmms) {
   if (!status) return true;
 
   return !(
+    status.includes("REALIZ") ||
     status.includes("FINAL") ||
     status.includes("CONCLU") ||
     status.includes("CANCEL") ||
@@ -2006,7 +2007,7 @@ export default function Home() {
             {alertasManutencaoSelecionado.length > 0 && (
               <section style={styles.alertaManutencaoBox}>
                 <h3 style={styles.subtituloSecao}>Alerta de manutenção</h3>
-                <p style={styles.textoApoio}>Existe ordem de manutenção aberta/importada do CMMS para este equipamento.</p>
+                <p style={styles.textoApoio}>Existe ordem de manutenção aberta ou pendente importada do CMMS para este equipamento.</p>
                 {alertasManutencaoSelecionado.map(({ os, alerta }) => (
                   <div key={`${os.num_os}-${os.tag}`} style={styles.alertaItem}>
                     <strong>{alerta.titulo} - OS {os.num_os}</strong><br />
@@ -2169,7 +2170,7 @@ export default function Home() {
                 )}
 
                 <section style={styles.boxInterno}>
-                  <h3 style={styles.subtituloSecao}>OS abertas importadas</h3>
+                  <h3 style={styles.subtituloSecao}>OS abertas / pendentes importadas</h3>
                   {osCmmsAbertas.length === 0 && <p>Nenhuma OS aberta importada.</p>}
                   <div style={styles.tabelaEquipamentos}>
                     {osCmmsAbertas.slice(0, 60).map((os) => {
