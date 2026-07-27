@@ -119,6 +119,39 @@ type ParadaManutencao = {
   horas_parado?: number | null;
 };
 
+type OsCmms = {
+  id?: string;
+  num_os: string;
+  tag: string;
+  tag_normalizada?: string;
+  equipamento_texto?: string;
+  equipamento_id?: string | null;
+  setor?: string;
+  tipo_manut?: string;
+  recorrencia?: string;
+  dt_progr?: string;
+  hr_parada?: string;
+  hr_retorno?: string;
+  tempo_parada_hrs?: string;
+  tempo_parada_min?: string;
+  status?: string;
+  solicitante?: string;
+  executor?: string;
+  dt_exec?: string;
+  modo_trab?: string;
+  codigo_parada?: string;
+  desc_codigo_parada?: string;
+  descricao?: string;
+  parecer?: string;
+  turno?: string;
+  fluxo_manutencao?: string;
+  gpm?: string;
+  origem_arquivo?: string;
+  importado_por?: string;
+  ativo_equipamento?: boolean;
+  importado_em?: string;
+};
+
 const itensFallback: ChecklistItemPadrao[] = [
   { numero: 1, descricao: "Estado geral do equipamento / avarias visíveis" },
   { numero: 2, descricao: "Rodas, pneus e rodízios sem desgaste excessivo ou travamento" },
@@ -224,6 +257,139 @@ function normalizar(texto: string) {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/\s+/g, "");
+}
+
+function normalizarCabecalho(texto: string) {
+  return String(texto || "")
+    .trim()
+    .toUpperCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function normalizarTagOS(tag: string) {
+  const base = String(tag || "")
+    .toUpperCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^A-Z0-9]/g, "");
+
+  return base.replace(/^([A-Z]+)0+(\d+)/, "$1$2");
+}
+
+function extrairTagDoEquipamentoCmms(equipamento: string) {
+  const primeiraParte = String(equipamento || "").split(" - ")[0] || "";
+  const match = primeiraParte.match(/[A-Za-z]{2,6}\s*[-]?\s*\d+[A-Za-z]?/);
+  return (match ? match[0] : primeiraParte)
+    .replace(/-/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toUpperCase();
+}
+
+function dataBRParaISO(data: string) {
+  const texto = String(data || "").trim();
+  const match = texto.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+  if (!match || match[1] === "00" || match[2] === "00" || match[3] === "0000") return "";
+  return `${match[3]}-${match[2]}-${match[1]}`;
+}
+
+function osCmmsEstaAberta(os: OsCmms) {
+  const status = normalizar(os.status || "");
+  if (!status) return true;
+
+  return !(
+    status.includes("FINAL") ||
+    status.includes("CONCLU") ||
+    status.includes("CANCEL") ||
+    status.includes("FECH") ||
+    status.includes("ENCERR") ||
+    status.includes("EXECUT")
+  );
+}
+
+function osCmmsEhPreventiva(os: OsCmms) {
+  return normalizar(os.tipo_manut || "").includes("PREVENT");
+}
+
+function osCmmsEhCorretiva(os: OsCmms) {
+  return normalizar(os.tipo_manut || "").includes("CORRET");
+}
+
+function classificarAlertaCmms(os: OsCmms, hoje = hojeISO()) {
+  const dataProgramada = dataBRParaISO(os.dt_progr || "");
+  const preventiva = osCmmsEhPreventiva(os);
+  const corretiva = osCmmsEhCorretiva(os);
+
+  if (preventiva && dataProgramada && dataProgramada < hoje) {
+    return {
+      nivel: "CRITICO",
+      titulo: "Preventiva atrasada",
+      mensagem: "Este equipamento possui preventiva atrasada. Entre em contato com a manutenção para programação.",
+    };
+  }
+
+  if (preventiva) {
+    return {
+      nivel: "AVISO",
+      titulo: "Preventiva em aberto",
+      mensagem: "Este equipamento possui preventiva em aberto/programada no CMMS.",
+    };
+  }
+
+  if (corretiva) {
+    return {
+      nivel: "AVISO",
+      titulo: "Corretiva em aberto",
+      mensagem: "Este equipamento possui OS corretiva aberta no CMMS. Verifique a condição antes de operar.",
+    };
+  }
+
+  return {
+    nivel: "AVISO",
+    titulo: "OS em aberto",
+    mensagem: "Este equipamento possui ordem de manutenção aberta no CMMS.",
+  };
+}
+
+function parseNumeroBR(valor: string) {
+  const texto = String(valor || "").replace(/\./g, "").replace(",", ".");
+  const numero = Number(texto);
+  return Number.isFinite(numero) ? numero : null;
+}
+
+function lerArquivoComoTexto(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = reject;
+    reader.readAsText(file, "ISO-8859-1");
+  });
+}
+
+function extrairLinhasCmmsDoHtml(texto: string) {
+  const doc = new DOMParser().parseFromString(texto, "text/html");
+  const trs = Array.from(doc.querySelectorAll("tr"));
+  const headerIndex = trs.findIndex((tr) => {
+    const cells = Array.from(tr.querySelectorAll("td,th")).map((td) => normalizar(td.textContent || ""));
+    return cells.includes("NUM.OS") || (cells.includes("NUMOS") && cells.includes("EQUIPAMENTO")) || cells.includes("NUM.OS");
+  });
+
+  const indiceCabecalho = headerIndex >= 0 ? headerIndex : trs.findIndex((tr) => normalizar(tr.textContent || "").includes("NUM.OS") && normalizar(tr.textContent || "").includes("EQUIPAMENTO"));
+  if (indiceCabecalho < 0) throw new Error("Não encontrei o cabeçalho do relatório. Verifique se o arquivo é o Extrato de Manutenções Amplo do CMMS.");
+
+  const headers = Array.from(trs[indiceCabecalho].querySelectorAll("td,th")).map((td) => normalizarCabecalho(td.textContent || ""));
+
+  return trs.slice(indiceCabecalho + 1)
+    .map((tr) => {
+      const cells = Array.from(tr.querySelectorAll("td,th")).map((td) => (td.textContent || "").replace(/\s+/g, " ").trim());
+      const row: Record<string, string> = {};
+      headers.forEach((h, i) => { row[h] = cells[i] || ""; });
+      return row;
+    })
+    .filter((row) => row.NUM_OS && row.EQUIPAMENTO);
 }
 
 function normalizarUsuario(usuario: string) {
@@ -413,6 +579,14 @@ export default function Home() {
   const [respostasBanco, setRespostasBanco] = useState<RespostaBanco[]>([]);
   const [decisoesNA, setDecisoesNA] = useState<DecisaoNA[]>([]);
   const [paradasManutencao, setParadasManutencao] = useState<ParadaManutencao[]>([]);
+  const [osCmms, setOsCmms] = useState<OsCmms[]>([]);
+  const [resultadoImportacaoCMMS, setResultadoImportacaoCMMS] = useState<{
+    total: number;
+    importadas: number;
+    vinculadas: number;
+    semVinculo: number;
+    arquivo: string;
+  } | null>(null);
 
   const [operador, setOperador] = useState("");
   const [data, setData] = useState(hojeISO());
@@ -427,6 +601,7 @@ export default function Home() {
   const [observacaoGeral, setObservacaoGeral] = useState("");
   const [horimetroLeitura, setHorimetroLeitura] = useState("");
   const [confirmacaoOperador, setConfirmacaoOperador] = useState(false);
+  const [confirmacaoAlertaManutencao, setConfirmacaoAlertaManutencao] = useState(false);
   const [fotoEvidencia, setFotoEvidencia] = useState("");
   const [fotoHorimetro, setFotoHorimetro] = useState("");
 
@@ -437,7 +612,7 @@ export default function Home() {
   const [equipamentoEdicao, setEquipamentoEdicao] = useState<Equipamento>(equipamentoVazio);
   const [editandoTag, setEditandoTag] = useState("");
   const [buscaCadastro, setBuscaCadastro] = useState("");
-  const [filtroAdmin, setFiltroAdmin] = useState<"TODOS" | "AVARIAS" | "PENDENTES" | "CONCLUIDOS" | "RELATORIOS">("TODOS");
+  const [filtroAdmin, setFiltroAdmin] = useState<"TODOS" | "AVARIAS" | "PENDENTES" | "CONCLUIDOS" | "RELATORIOS" | "CMMS">("TODOS");
   const [tagReservaSelecionada, setTagReservaSelecionada] = useState("");
   const [observacaoAdminParada, setObservacaoAdminParada] = useState("");
 
@@ -591,7 +766,7 @@ export default function Home() {
   async function carregarDados() {
     setMensagem("");
 
-    const [eqs, itens, itensTodos, chks, resps, decs, pars, usersApp] = await Promise.all([
+    const [eqs, itens, itensTodos, chks, resps, decs, pars, usersApp, osImportadas] = await Promise.all([
       supabaseRequest<Equipamento[]>("equipamentos?select=*&order=tag.asc"),
       supabaseRequest<ChecklistItemPadrao[]>("checklist_itens_padrao?select=numero,descricao,ativo&ativo=eq.true&order=numero.asc"),
       supabaseRequest<ChecklistItemPadrao[]>("checklist_itens_padrao?select=numero,descricao,ativo&order=numero.asc"),
@@ -600,6 +775,7 @@ export default function Home() {
       supabaseRequest<DecisaoNA[]>("decisoes_na?select=*&order=criado_em.desc"),
       supabaseRequest<ParadaManutencao[]>("paradas_manutencao?select=*&status=neq.FINALIZADA&order=criado_em.desc"),
       supabaseRequest<PerfilUsuario[]>("usuarios_app?select=*&order=nome.asc"),
+      supabaseRequest<OsCmms[]>("os_cmms?select=*&order=importado_em.desc&limit=5000").catch(() => []),
     ]);
 
     setEquipamentos(eqs || []);
@@ -610,6 +786,7 @@ export default function Home() {
     setDecisoesNA(decs || []);
     setParadasManutencao(pars || []);
     setUsuariosApp(usersApp || []);
+    setOsCmms(osImportadas || []);
   }
 
     const areas = useMemo(() => {
@@ -645,6 +822,31 @@ export default function Home() {
   }, [equipamentos, relatorioBuscaEquipamento]);
 
   const equipamentoSelecionado = equipamentos.find((e) => e.tag === tagSelecionada) || null;
+
+  const osCmmsAbertas = useMemo(() => osCmms.filter(osCmmsEstaAberta), [osCmms]);
+
+  const tagsComAlertaCmms = useMemo(() => {
+    const mapa = new Map<string, number>();
+    osCmmsAbertas.forEach((os) => {
+      const chave = normalizarTagOS(os.tag);
+      if (!chave) return;
+      mapa.set(chave, (mapa.get(chave) || 0) + 1);
+    });
+    return mapa;
+  }, [osCmmsAbertas]);
+
+  const alertasManutencaoSelecionado = useMemo(() => {
+    if (!equipamentoSelecionado) return [];
+    const tagAtual = normalizarTagOS(equipamentoSelecionado.tag);
+
+    return osCmmsAbertas
+      .filter((os) => normalizarTagOS(os.tag) === tagAtual)
+      .map((os) => ({ os, alerta: classificarAlertaCmms(os) }))
+      .sort((a, b) => (a.alerta.nivel === "CRITICO" ? -1 : 1) - (b.alerta.nivel === "CRITICO" ? -1 : 1))
+      .slice(0, 5);
+  }, [equipamentoSelecionado, osCmmsAbertas]);
+
+  const osCmmsSemVinculo = useMemo(() => osCmms.filter((os) => !os.equipamento_id), [osCmms]);
   const checklistsDoDia = checklists.filter((c) => c.data_checklist === data);
   const checklistsTurnoSelecionado = checklistsDoDia.filter((c) => (c.turno_codigo || "T1") === turnoSelecionado);
   const tagsFeitasTurno = new Set(checklistsTurnoSelecionado.map((c) => normalizar(c.tag)));
@@ -737,6 +939,7 @@ export default function Home() {
     setObservacaoGeral("");
     setHorimetroLeitura("");
     setConfirmacaoOperador(false);
+    setConfirmacaoAlertaManutencao(false);
     setFotoEvidencia("");
     setFotoHorimetro("");
     setAvariaImpedeUso(false);
@@ -753,6 +956,7 @@ export default function Home() {
     setTagSelecionada(tag);
     setTelaOperador("CHECKLIST");
     setMensagem("");
+    setConfirmacaoAlertaManutencao(false);
 
     const existente = checklists.find((c) =>
       c.data_checklist === data &&
@@ -795,6 +999,99 @@ export default function Home() {
 
   function alterarObservacaoItem(itemNumero: number, observacao: string) {
     setRespostas((atuais) => atuais.map((r) => r.item_numero === itemNumero ? { ...r, observacao } : r));
+  }
+
+  async function importarArquivoCMMS(evento: React.ChangeEvent<HTMLInputElement>) {
+    const file = evento.target.files?.[0];
+    if (!file) return;
+
+    if (!isAdmin) {
+      setMensagem("Somente ADMIN pode importar OS do CMMS.");
+      evento.target.value = "";
+      return;
+    }
+
+    try {
+      setCarregando(true);
+      setMensagem("Lendo arquivo do CMMS...");
+
+      const texto = await lerArquivoComoTexto(file);
+      const linhas = extrairLinhasCmmsDoHtml(texto);
+
+      if (!linhas.length) {
+        throw new Error("Nenhuma OS encontrada no arquivo.");
+      }
+
+      const equipamentosPorTag = new Map(equipamentos.map((e) => [normalizarTagOS(e.tag), e]));
+      const payload: OsCmms[] = linhas.map((linha) => {
+        const equipamentoTexto = linha.EQUIPAMENTO || "";
+        const tag = extrairTagDoEquipamentoCmms(equipamentoTexto);
+        const equip = equipamentosPorTag.get(normalizarTagOS(tag));
+
+        return {
+          num_os: linha.NUM_OS,
+          tag,
+          tag_normalizada: normalizarTagOS(tag),
+          equipamento_texto: equipamentoTexto,
+          equipamento_id: equip?.id || null,
+          setor: linha.SETOR || "",
+          tipo_manut: linha.TIPO_MANUT || "",
+          recorrencia: linha.RECORRENCIA || "",
+          dt_progr: linha.DT_PROGR || "",
+          hr_parada: linha.HR_PARADA || "",
+          hr_retorno: linha.HR_RETORNO || "",
+          tempo_parada_hrs: linha.TEMPO_PARADA_HRS || "",
+          tempo_parada_min: linha.TEMPO_PARADA_MIN || "",
+          status: linha.STATUS || "",
+          solicitante: linha.SOLICITANTE || "",
+          executor: linha.EXECUTOR || "",
+          dt_exec: linha.DT_EXEC || "",
+          modo_trab: linha.MODO_TRAB || "",
+          codigo_parada: linha.CODIGO_PARADA || "",
+          desc_codigo_parada: linha.DESC_CODIGO_PARADA || "",
+          descricao: linha.DESCRICAO || "",
+          parecer: linha.PARECER || "",
+          turno: linha.TURNO || "",
+          fluxo_manutencao: linha.FLUXO_MANUTENCAO || "",
+          gpm: linha.GPM || "",
+          origem_arquivo: file.name,
+          importado_por: perfilUsuario?.nome || "ADMIN",
+          ativo_equipamento: equip ? equip.ativo !== false : false,
+        };
+      }).filter((os) => os.num_os && os.tag);
+
+      if (!payload.length) throw new Error("Nenhuma OS válida encontrada para importação.");
+
+      const tamanhoLote = 300;
+      for (let i = 0; i < payload.length; i += tamanhoLote) {
+        const lote = payload.slice(i, i + tamanhoLote);
+        await supabaseRequest<OsCmms[]>("os_cmms?on_conflict=num_os,tag", {
+          method: "POST",
+          headers: { Prefer: "resolution=merge-duplicates,return=representation" },
+          body: JSON.stringify(lote),
+        });
+      }
+
+      await carregarDados();
+
+      const vinculadas = payload.filter((os) => os.equipamento_id).length;
+      const semVinculo = payload.length - vinculadas;
+
+      setResultadoImportacaoCMMS({
+        total: linhas.length,
+        importadas: payload.length,
+        vinculadas,
+        semVinculo,
+        arquivo: file.name,
+      });
+
+      setMensagem(`Importação concluída: ${payload.length} OS importadas/atualizadas. Vinculadas: ${vinculadas}. Sem vínculo: ${semVinculo}.`);
+    } catch (err: any) {
+      setMensagem(`Erro ao importar CMMS: ${err.message || err}`);
+    } finally {
+      setCarregando(false);
+      evento.target.value = "";
+    }
   }
 
   async function carregarFoto(evento: React.ChangeEvent<HTMLInputElement>, tipo: "EVIDENCIA" | "HORIMETRO") {
@@ -845,6 +1142,10 @@ export default function Home() {
 
     if ((avariaImpedeUso || situacaoEquipamento === "EM MANUTENÇÃO") && !numeroOS.trim()) {
       return setMensagem("Informe o número da OS para equipamento parado/em manutenção.");
+    }
+
+    if (alertasManutencaoSelecionado.length && !confirmacaoAlertaManutencao) {
+      return setMensagem("Confirme que está ciente do alerta de manutenção antes de finalizar o checklist.");
     }
 
     if (!confirmacaoOperador) return setMensagem("Marque a confirmação final do operador.");
@@ -1470,7 +1771,7 @@ export default function Home() {
     .link-foto { word-break: break-all; font-size: 11px; padding: 6px; border: 1px solid #e5e7eb; border-radius: 8px; }
     .sem-dados { color: #6b7280; }
     footer { margin-top: 24px; color: #6b7280; font-size: 11px; text-align: center; }
-    @page { size: A4 portrait; margin: 12mm; }
+    @page { size: A4 portrait; margin: 10mm; }
     @media print { body { background: #fff; } .pagina { max-width: none; padding: 0; } .barra-acoes { display: none; } a { color: #111827; text-decoration: none; } }
   </style>
 </head>
@@ -1671,6 +1972,7 @@ export default function Home() {
                     <small>Modelo: {e.modelo || "Não informado"}</small>
                     <small>{e.area || "LOCAL A DEFINIR"}</small>
                     {e.status_operacional === "EM_MANUTENCAO" && <span style={styles.badgeAtrasado}>Em manutenção</span>}
+                    {tagsComAlertaCmms.has(normalizarTagOS(e.tag)) && <span style={styles.badgeAtrasado}>Manutenção pendente</span>}
                     {e.checklist_obrigatorio === false && <span style={styles.badgeOpcional}>Não obrigatório</span>}
                     {feito && <span style={styles.badgeConcluido}>Feito neste turno</span>}
                   </button>
@@ -1700,6 +2002,26 @@ export default function Home() {
               <Info label="Local" valor={equipamentoSelecionado.local_correto || "LOCAL A DEFINIR"} destaque />
               <Info label="Área" valor={equipamentoSelecionado.area || "LOCAL A DEFINIR"} destaque />
             </div>
+
+            {alertasManutencaoSelecionado.length > 0 && (
+              <section style={styles.alertaManutencaoBox}>
+                <h3 style={styles.subtituloSecao}>Alerta de manutenção</h3>
+                <p style={styles.textoApoio}>Existe ordem de manutenção aberta/importada do CMMS para este equipamento.</p>
+                {alertasManutencaoSelecionado.map(({ os, alerta }) => (
+                  <div key={`${os.num_os}-${os.tag}`} style={styles.alertaItem}>
+                    <strong>{alerta.titulo} - OS {os.num_os}</strong><br />
+                    {alerta.mensagem}<br />
+                    Tipo: {os.tipo_manut || "Não informado"} | Status: {os.status || "Não informado"}<br />
+                    Data programada: {os.dt_progr || "Não informada"}<br />
+                    Descrição: {os.descricao || os.desc_codigo_parada || "Sem descrição"}
+                  </div>
+                ))}
+                <label style={styles.checkLabel}>
+                  <input type="checkbox" checked={confirmacaoAlertaManutencao} onChange={(e) => setConfirmacaoAlertaManutencao(e.target.checked)} />
+                  Estou ciente do alerta de manutenção deste equipamento.
+                </label>
+              </section>
+            )}
 
             <section style={styles.boxInternoDestaque}>
               <h3 style={styles.subtituloSecao}>Situação do equipamento</h3>
@@ -1812,11 +2134,80 @@ export default function Home() {
                 <button onClick={exportarDetalhadoCSV} style={styles.botaoCinza}>Exportar detalhado CSV</button>
               </div>
               <div style={styles.filtroLinha}>
-                {(["TODOS", "AVARIAS", "PENDENTES", "CONCLUIDOS", "RELATORIOS"] as const).map((f) => (
+                {(["TODOS", "AVARIAS", "PENDENTES", "CONCLUIDOS", "RELATORIOS", "CMMS"] as const).map((f) => (
                   <button key={f} onClick={() => setFiltroAdmin(f)} style={filtroAdmin === f ? styles.filtroAtivo : styles.filtroBotao}>{f}</button>
                 ))}
               </div>
             </section>
+
+            {filtroAdmin === "CMMS" && (
+              <section style={styles.box}>
+                <h2 style={styles.boxTitulo}>Importar OS do CMMS</h2>
+                <p style={styles.textoApoio}>
+                  Área exclusiva do ADMIN. Importe o relatório Extrato de Manutenções Amplo em .xls. O app vincula as OS pela TAG do equipamento.
+                </p>
+
+                <div style={isMobile ? styles.gridMobile : styles.grid4}>
+                  <Card titulo="OS importadas" valor={osCmms.length} />
+                  <Card titulo="OS abertas" valor={osCmmsAbertas.length} />
+                  <Card titulo="Sem vínculo ativo" valor={osCmmsSemVinculo.length} />
+                  <Card titulo="Alertas na frota" valor={tagsComAlertaCmms.size} />
+                </div>
+
+                <Campo label="Selecionar arquivo exportado do CMMS">
+                  <input type="file" accept=".xls,.html,.htm" onChange={importarArquivoCMMS} style={styles.input} />
+                </Campo>
+
+                {resultadoImportacaoCMMS && (
+                  <div style={styles.alertaItem}>
+                    <strong>Última importação: {resultadoImportacaoCMMS.arquivo}</strong><br />
+                    Linhas lidas: {resultadoImportacaoCMMS.total}<br />
+                    OS importadas/atualizadas: {resultadoImportacaoCMMS.importadas}<br />
+                    Vinculadas ao cadastro atual: {resultadoImportacaoCMMS.vinculadas}<br />
+                    Sem vínculo ativo: {resultadoImportacaoCMMS.semVinculo}
+                  </div>
+                )}
+
+                <section style={styles.boxInterno}>
+                  <h3 style={styles.subtituloSecao}>OS abertas importadas</h3>
+                  {osCmmsAbertas.length === 0 && <p>Nenhuma OS aberta importada.</p>}
+                  <div style={styles.tabelaEquipamentos}>
+                    {osCmmsAbertas.slice(0, 60).map((os) => {
+                      const alerta = classificarAlertaCmms(os);
+                      return (
+                        <div key={`${os.num_os}-${os.tag}`} style={isMobile ? styles.linhaEquipamentoMobile : styles.linhaEquipamento}>
+                          <div>
+                            <strong>{os.tag} - OS {os.num_os}</strong><br />
+                            {alerta.titulo} | {os.tipo_manut || "Tipo não informado"} | Status: {os.status || "Não informado"}<br />
+                            Data programada: {os.dt_progr || "Não informada"}<br />
+                            Descrição: {os.descricao || os.desc_codigo_parada || "Sem descrição"}
+                          </div>
+                          <span style={alerta.nivel === "CRITICO" ? styles.badgeAtrasado : styles.badgeAguardando}>{alerta.titulo}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                <section style={styles.boxInterno}>
+                  <h3 style={styles.subtituloSecao}>OS sem vínculo com equipamento ativo</h3>
+                  <p style={styles.textoApoio}>Isso é esperado quando importar histórico antigo ou equipamentos que não existem mais no app.</p>
+                  {osCmmsSemVinculo.length === 0 && <p>Nenhuma OS sem vínculo.</p>}
+                  <div style={styles.tabelaEquipamentos}>
+                    {osCmmsSemVinculo.slice(0, 40).map((os) => (
+                      <div key={`${os.num_os}-${os.tag}`} style={isMobile ? styles.linhaEquipamentoMobile : styles.linhaEquipamento}>
+                        <div>
+                          <strong>{os.tag} - OS {os.num_os}</strong><br />
+                          Equipamento CMMS: {os.equipamento_texto}<br />
+                          Tipo: {os.tipo_manut || "Não informado"} | Status: {os.status || "Não informado"}<br />
+                          Descrição: {os.descricao || os.desc_codigo_parada || "Sem descrição"}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              </section>
+            )}
 
             {filtroAdmin === "RELATORIOS" && (
               <section style={styles.box}>
@@ -2304,6 +2695,7 @@ const styles: Record<string, React.CSSProperties> = {
   filtroBotao: { padding: "9px 12px", borderRadius: 999, border: "1px solid #cbd5e1", background: "white", color: "#0f172a", fontWeight: 800, cursor: "pointer" },
   filtroAtivo: { padding: "9px 12px", borderRadius: 999, border: "none", background: "#111111", color: "#FFE600", fontWeight: 800, cursor: "pointer" },
   alertaItem: { background: "#fff7ed", border: "1px solid #fdba74", padding: 14, borderRadius: 14, marginBottom: 10 },
+  alertaManutencaoBox: { background: "#fef2f2", border: "2px solid #ef4444", padding: 16, borderRadius: 16, marginTop: 16 },
   pendentesGrid: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10 },
   pendentesGridMobile: { display: "grid", gridTemplateColumns: "1fr", gap: 10 },
   pendenteItem: { background: "#f8fafc", border: "1px solid #e2e8f0", padding: 12, borderRadius: 12 },
