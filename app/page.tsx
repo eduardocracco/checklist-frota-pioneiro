@@ -200,6 +200,22 @@ function horarioReferenciaTurno(turno: TurnoCodigo) {
   return turno === "T1" ? "06:00" : "18:00";
 }
 
+function formatarDataBR(dataISO: string) {
+  if (!dataISO) return "";
+  const [ano, mes, dia] = dataISO.split("-");
+  if (!ano || !mes || !dia) return dataISO;
+  return `${dia}/${mes}/${ano}`;
+}
+
+function escaparHTML(valor: any) {
+  return String(valor ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
 function normalizar(texto: string) {
   return texto
     .toString()
@@ -421,7 +437,7 @@ export default function Home() {
   const [equipamentoEdicao, setEquipamentoEdicao] = useState<Equipamento>(equipamentoVazio);
   const [editandoTag, setEditandoTag] = useState("");
   const [buscaCadastro, setBuscaCadastro] = useState("");
-  const [filtroAdmin, setFiltroAdmin] = useState<"TODOS" | "AVARIAS" | "PENDENTES" | "CONCLUIDOS">("TODOS");
+  const [filtroAdmin, setFiltroAdmin] = useState<"TODOS" | "AVARIAS" | "PENDENTES" | "CONCLUIDOS" | "RELATORIOS">("TODOS");
   const [tagReservaSelecionada, setTagReservaSelecionada] = useState("");
   const [observacaoAdminParada, setObservacaoAdminParada] = useState("");
 
@@ -436,6 +452,13 @@ export default function Home() {
   const [usuarioAdminPerfil, setUsuarioAdminPerfil] = useState<Perfil>("OPERADOR");
   const [usuarioAdminAtivo, setUsuarioAdminAtivo] = useState(true);
   const [usuarioAdminEditando, setUsuarioAdminEditando] = useState<string | null>(null);
+
+  const [relatorioDataInicio, setRelatorioDataInicio] = useState(hojeISO());
+  const [relatorioDataFim, setRelatorioDataFim] = useState(hojeISO());
+  const [relatorioTurno, setRelatorioTurno] = useState<"TODOS" | TurnoCodigo>("TODOS");
+  const [relatorioBuscaEquipamento, setRelatorioBuscaEquipamento] = useState("");
+  const [relatorioTagsSelecionadas, setRelatorioTagsSelecionadas] = useState<string[]>([]);
+  const [relatorioIncluirFotos, setRelatorioIncluirFotos] = useState(false);
 
   const perfil: Perfil = perfilUsuario?.perfil || "OPERADOR";
   const isAdmin = perfil === "ADMIN";
@@ -608,6 +631,18 @@ export default function Home() {
       .filter((e) => normalizar(`${e.tag} ${e.tipo_equipamento} ${e.modelo || ""} ${e.local_correto || ""} ${e.area || ""}`).includes(termo))
       .slice(0, 20);
   }, [equipamentos, buscaCadastro]);
+
+  const equipamentosRelatorioFiltrados = useMemo(() => {
+    const termo = normalizar(relatorioBuscaEquipamento);
+    return equipamentos
+      .filter((e) => e.ativo !== false)
+      .filter((e) => {
+        if (!termo) return true;
+        return normalizar(`${e.tag} ${e.tipo_equipamento} ${e.modelo || ""} ${e.numero_serie || ""} ${e.local_correto || ""} ${e.area || ""}`).includes(termo);
+      })
+      .sort((a, b) => normalizar(a.tag).localeCompare(normalizar(b.tag)))
+      .slice(0, termo ? 60 : 120);
+  }, [equipamentos, relatorioBuscaEquipamento]);
 
   const equipamentoSelecionado = equipamentos.find((e) => e.tag === tagSelecionada) || null;
   const checklistsDoDia = checklists.filter((c) => c.data_checklist === data);
@@ -1278,6 +1313,200 @@ export default function Home() {
     }
   }
 
+  function alternarEquipamentoRelatorio(tag: string) {
+    setRelatorioTagsSelecionadas((atual) =>
+      atual.includes(tag) ? atual.filter((t) => t !== tag) : [...atual, tag]
+    );
+  }
+
+  function selecionarTodosEquipamentosRelatorio() {
+    const tags = equipamentosRelatorioFiltrados.map((e) => e.tag);
+    setRelatorioTagsSelecionadas((atual) => Array.from(new Set([...atual, ...tags])));
+  }
+
+  function limparSelecaoRelatorio() {
+    setRelatorioTagsSelecionadas([]);
+  }
+
+  function gerarRelatorioChecklistPDF() {
+    if (!isAdmin) return setMensagem("Somente ADMIN pode gerar relatório.");
+    if (!relatorioTagsSelecionadas.length) return setMensagem("Selecione pelo menos um equipamento para gerar o relatório.");
+    if (!relatorioDataInicio || !relatorioDataFim) return setMensagem("Informe data inicial e data final do relatório.");
+    if (relatorioDataInicio > relatorioDataFim) return setMensagem("A data inicial não pode ser maior que a data final.");
+
+    const tagsSelecionadasNormalizadas = new Set(relatorioTagsSelecionadas.map((tag) => normalizar(tag)));
+    const checklistsRelatorio = checklists
+      .filter((c) => tagsSelecionadasNormalizadas.has(normalizar(c.tag)))
+      .filter((c) => c.data_checklist >= relatorioDataInicio && c.data_checklist <= relatorioDataFim)
+      .filter((c) => relatorioTurno === "TODOS" || (c.turno_codigo || "T1") === relatorioTurno)
+      .sort((a, b) => `${a.tag}-${a.data_checklist}-${a.turno_codigo || "T1"}-${a.hora_checklist || ""}`.localeCompare(`${b.tag}-${b.data_checklist}-${b.turno_codigo || "T1"}-${b.hora_checklist || ""}`));
+
+    if (!checklistsRelatorio.length) return setMensagem("Não foram encontrados checklists para os equipamentos e período selecionados.");
+
+    const equipamentoPorTag = new Map<string, Equipamento>();
+    equipamentos.forEach((e) => equipamentoPorTag.set(normalizar(e.tag), e));
+
+    const tagsOrdenadas = [...relatorioTagsSelecionadas].sort((a, b) => normalizar(a).localeCompare(normalizar(b)));
+    const emitidoEm = `${formatarDataBR(hojeISO())} ${horaBrasil()}`;
+    const turnoTexto = relatorioTurno === "TODOS" ? "Todos" : nomeTurno(relatorioTurno);
+    const relatorioDiario = relatorioDataInicio === relatorioDataFim;
+    const deveIncluirFotos = relatorioDiario || relatorioIncluirFotos;
+    const fotosTexto = deveIncluirFotos ? "Fotos incluídas" : "Links das fotos";
+
+    const blocosEquipamentos = tagsOrdenadas.map((tag) => {
+      const equipamento = equipamentoPorTag.get(normalizar(tag));
+      const checklistsDoEquipamento = checklistsRelatorio.filter((c) => normalizar(c.tag) === normalizar(tag));
+
+      const cabecalhoEquipamento = `
+        <section class="equipamento">
+          <h2>${escaparHTML(tag)}</h2>
+          <div class="dados-maquina">
+            <div><span>Tipo</span><strong>${escaparHTML(equipamento?.tipo_equipamento || checklistsDoEquipamento[0]?.tipo_equipamento || "Não informado")}</strong></div>
+            <div><span>Modelo</span><strong>${escaparHTML(equipamento?.modelo || checklistsDoEquipamento[0]?.modelo || "Não informado")}</strong></div>
+            <div><span>Nº série</span><strong>${escaparHTML(equipamento?.numero_serie || checklistsDoEquipamento[0]?.numero_serie || "Não informado")}</strong></div>
+            <div><span>Área/local</span><strong>${escaparHTML(equipamento?.area || checklistsDoEquipamento[0]?.area || "Não informado")} ${equipamento?.local_correto ? "- " + escaparHTML(equipamento.local_correto) : ""}</strong></div>
+          </div>
+      `;
+
+      if (!checklistsDoEquipamento.length) {
+        return `${cabecalhoEquipamento}<p class="sem-dados">Nenhum checklist encontrado no período selecionado.</p></section>`;
+      }
+
+      const blocosChecklists = checklistsDoEquipamento.map((chk) => {
+        const respostas = respostasBanco
+          .filter((r) => r.checklist_id === chk.id)
+          .sort((a, b) => a.item_numero - b.item_numero);
+
+        const linhas = respostas.map((r) => `
+          <tr>
+            <td>${r.item_numero}</td>
+            <td>${escaparHTML(r.item_descricao)}</td>
+            <td class="status ${r.status === "OK" ? "ok" : r.status === "NÃO OK" ? "nok" : "na"}">${escaparHTML(r.status)}</td>
+            <td>${escaparHTML(r.observacao || "")}</td>
+          </tr>
+        `).join("");
+
+        const fotos = [
+          chk.foto_evidencia_url ? { titulo: "Foto do equipamento/avaria", url: chk.foto_evidencia_url } : null,
+          chk.foto_horimetro_url ? { titulo: "Foto do horímetro", url: chk.foto_horimetro_url } : null,
+        ].filter(Boolean) as { titulo: string; url: string }[];
+
+        const blocoFotos = fotos.length ? `
+          <div class="fotos">
+            <h4>Fotos</h4>
+            ${deveIncluirFotos
+              ? fotos.map((f) => `<div class="foto-card"><span>${escaparHTML(f.titulo)}</span><img src="${escaparHTML(f.url)}" /></div>`).join("")
+              : fotos.map((f) => `<div class="link-foto"><strong>${escaparHTML(f.titulo)}:</strong> <a href="${escaparHTML(f.url)}">${escaparHTML(f.url)}</a></div>`).join("")
+            }
+          </div>
+        ` : "";
+
+        return `
+          <article class="checklist">
+            <div class="checklist-topo">
+              <div><span>Data</span><strong>${formatarDataBR(chk.data_checklist)}</strong></div>
+              <div><span>Turno</span><strong>${escaparHTML(chk.turno_nome || nomeTurno((chk.turno_codigo || "T1") as TurnoCodigo))}</strong></div>
+              <div><span>Hora</span><strong>${escaparHTML(chk.hora_checklist || "")}</strong></div>
+              <div><span>Operador</span><strong>${escaparHTML(chk.operador_nome)}</strong></div>
+              <div><span>Resultado</span><strong>${escaparHTML(chk.resultado_final)}</strong></div>
+              <div><span>Horímetro</span><strong>${escaparHTML(chk.horimetro || "Não informado")}</strong></div>
+            </div>
+            ${chk.observacao_geral ? `<p class="observacao"><strong>Observação geral:</strong> ${escaparHTML(chk.observacao_geral)}</p>` : ""}
+            <table>
+              <thead>
+                <tr>
+                  <th style="width: 40px;">Item</th>
+                  <th>Verificação</th>
+                  <th style="width: 80px;">Status</th>
+                  <th>Observação</th>
+                </tr>
+              </thead>
+              <tbody>${linhas || `<tr><td colspan="4">Sem itens registrados para este checklist.</td></tr>`}</tbody>
+            </table>
+            ${blocoFotos}
+          </article>
+        `;
+      }).join("");
+
+      return `${cabecalhoEquipamento}${blocosChecklists}</section>`;
+    }).join("");
+
+    const html = `<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>Relatório de Checklist de Equipamentos</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: Arial, Helvetica, sans-serif; color: #111827; margin: 0; background: #f3f4f6; }
+    .pagina { max-width: 1120px; margin: 0 auto; background: #fff; min-height: 100vh; padding: 24px; }
+    .barra-acoes { display: flex; gap: 10px; justify-content: flex-end; margin-bottom: 14px; }
+    .barra-acoes button { border: none; background: #111; color: #FFE600; font-weight: 800; border-radius: 10px; padding: 10px 14px; cursor: pointer; }
+    header { border: 1px solid #e5e7eb; border-top: 7px solid #FFE600; border-radius: 16px; padding: 16px; display: grid; grid-template-columns: 230px 1fr; gap: 18px; align-items: center; margin-bottom: 18px; }
+    header img { max-width: 220px; max-height: 80px; object-fit: contain; background: #000; border-radius: 12px; padding: 8px; }
+    h1 { margin: 0 0 8px; font-size: 24px; }
+    .meta { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; font-size: 12px; color: #374151; }
+    .meta div, .dados-maquina div, .checklist-topo div { border: 1px solid #e5e7eb; border-radius: 10px; padding: 8px; background: #f9fafb; }
+    span { display: block; color: #6b7280; font-size: 11px; text-transform: uppercase; letter-spacing: .03em; margin-bottom: 3px; }
+    strong { color: #111827; }
+    .equipamento { page-break-inside: avoid; border: 1px solid #d1d5db; border-radius: 16px; padding: 14px; margin: 18px 0; }
+    .equipamento h2 { margin: 0 0 10px; background: #111; color: #FFE600; padding: 10px 12px; border-radius: 10px; font-size: 20px; }
+    .dados-maquina { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
+    .checklist { page-break-inside: avoid; border-top: 2px solid #e5e7eb; padding-top: 12px; margin-top: 12px; }
+    .checklist-topo { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin-bottom: 10px; }
+    .observacao { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; }
+    th { background: #111; color: #FFE600; text-align: left; }
+    th, td { border: 1px solid #d1d5db; padding: 7px; vertical-align: top; }
+    tr:nth-child(even) td { background: #f9fafb; }
+    .status { font-weight: 800; text-align: center; }
+    .ok { color: #166534; }
+    .nok { color: #991b1b; }
+    .na { color: #475569; }
+    .fotos { margin-top: 12px; display: grid; gap: 8px; }
+    .fotos h4 { margin: 0 0 4px; }
+    .foto-card { border: 1px solid #e5e7eb; border-radius: 10px; padding: 8px; page-break-inside: avoid; }
+    .foto-card img { display: block; margin-top: 6px; max-width: 100%; max-height: 280px; object-fit: contain; border-radius: 8px; border: 1px solid #e5e7eb; }
+    .link-foto { word-break: break-all; font-size: 11px; padding: 6px; border: 1px solid #e5e7eb; border-radius: 8px; }
+    .sem-dados { color: #6b7280; }
+    footer { margin-top: 24px; color: #6b7280; font-size: 11px; text-align: center; }
+    @page { size: A4 landscape; margin: 10mm; }
+    @media print { body { background: #fff; } .pagina { max-width: none; padding: 0; } .barra-acoes { display: none; } a { color: #111827; text-decoration: none; } }
+  </style>
+</head>
+<body>
+  <div class="pagina">
+    <div class="barra-acoes"><button onclick="window.print()">Imprimir / salvar em PDF</button></div>
+    <header>
+      <img src="/logo.png" alt="Logo Baterias Pioneiro" />
+      <div>
+        <h1>Relatório de Checklist de Equipamentos</h1>
+        <div class="meta">
+          <div><span>Período</span><strong>${formatarDataBR(relatorioDataInicio)} a ${formatarDataBR(relatorioDataFim)}</strong></div>
+          <div><span>Turno</span><strong>${escaparHTML(turnoTexto)}</strong></div>
+          <div><span>Fotos</span><strong>${escaparHTML(fotosTexto)}</strong></div>
+          <div><span>Equipamentos</span><strong>${escaparHTML(tagsOrdenadas.join(", "))}</strong></div>
+          <div><span>Gerado por</span><strong>${escaparHTML(perfilUsuario?.nome || operador || "ADMIN")}</strong></div>
+          <div><span>Emissão</span><strong>${escaparHTML(emitidoEm)}</strong></div>
+        </div>
+      </div>
+    </header>
+    ${blocosEquipamentos}
+    <footer>Relatório gerado pelo sistema de checklist de equipamentos.</footer>
+  </div>
+</body>
+</html>`;
+
+    const janela = window.open("", "_blank");
+    if (!janela) return setMensagem("O navegador bloqueou a abertura do relatório. Libere pop-ups para este site.");
+
+    janela.document.open();
+    janela.document.write(html);
+    janela.document.close();
+    janela.focus();
+    setMensagem(`Relatório gerado com ${checklistsRelatorio.length} checklist(s). Use Imprimir / salvar em PDF.`);
+  }
+
   function exportarResumoCSV() {
     const cabecalho = ["DATA", "TURNO", "HORARIO_REFERENCIA", "HORA", "OPERADOR", "TAG", "EQUIPAMENTO", "MODELO", "AREA", "SITUACAO", "RESULTADO", "HORIMETRO", "OBSERVACAO", "FOTO_EVIDENCIA", "FOTO_HORIMETRO"];
     const linhas = checklists.map((r) => [
@@ -1583,11 +1812,69 @@ export default function Home() {
                 <button onClick={exportarDetalhadoCSV} style={styles.botaoCinza}>Exportar detalhado CSV</button>
               </div>
               <div style={styles.filtroLinha}>
-                {(["TODOS", "AVARIAS", "PENDENTES", "CONCLUIDOS"] as const).map((f) => (
+                {(["TODOS", "AVARIAS", "PENDENTES", "CONCLUIDOS", "RELATORIOS"] as const).map((f) => (
                   <button key={f} onClick={() => setFiltroAdmin(f)} style={filtroAdmin === f ? styles.filtroAtivo : styles.filtroBotao}>{f}</button>
                 ))}
               </div>
             </section>
+
+            {filtroAdmin === "RELATORIOS" && (
+              <section style={styles.box}>
+                <h2 style={styles.boxTitulo}>Relatório de Checklist de Equipamentos</h2>
+                <p style={styles.textoApoio}>
+                  Relatório exclusivo do perfil ADMIN. Selecione o período e os equipamentos para gerar um único relatório com os checklists registrados.
+                </p>
+
+                <div style={isMobile ? styles.gridMobile : styles.grid4}>
+                  <Campo label="Data inicial">
+                    <input type="date" value={relatorioDataInicio} onChange={(e) => setRelatorioDataInicio(e.target.value)} style={styles.input} />
+                  </Campo>
+                  <Campo label="Data final">
+                    <input type="date" value={relatorioDataFim} onChange={(e) => setRelatorioDataFim(e.target.value)} style={styles.input} />
+                  </Campo>
+                  <Campo label="Turno">
+                    <select value={relatorioTurno} onChange={(e) => setRelatorioTurno(e.target.value as "TODOS" | TurnoCodigo)} style={styles.input}>
+                      <option value="TODOS">Todos</option>
+                      <option value="T1">Turno 1 - 06h</option>
+                      <option value="T2">Turno 2 - 18h</option>
+                    </select>
+                  </Campo>
+                  <Campo label="Fotos">
+                    <select value={relatorioIncluirFotos ? "SIM" : "NAO"} onChange={(e) => setRelatorioIncluirFotos(e.target.value === "SIM")} style={styles.input}>
+                      <option value="NAO">Período: mostrar somente links</option>
+                      <option value="SIM">Período: incluir fotos no PDF</option>
+                    </select>
+                    <small style={styles.textoApoio}>Se for somente um dia, as fotos entram automaticamente.</small>
+                  </Campo>
+                </div>
+
+                <Campo label="Buscar equipamento">
+                  <input value={relatorioBuscaEquipamento} onChange={(e) => setRelatorioBuscaEquipamento(e.target.value)} placeholder="Ex.: PLE 12, PLE 80, PLE 100, área, modelo..." style={styles.input} />
+                </Campo>
+
+                <div style={styles.botoesLinha}>
+                  <button onClick={selecionarTodosEquipamentosRelatorio} style={styles.botaoCinza}>Selecionar lista filtrada</button>
+                  <button onClick={limparSelecaoRelatorio} style={styles.botaoCinza}>Limpar seleção</button>
+                  <button onClick={gerarRelatorioChecklistPDF} style={styles.botaoPreto}>Gerar relatório PDF</button>
+                </div>
+
+                <p style={styles.textoApoio}>Selecionados: {relatorioTagsSelecionadas.length ? relatorioTagsSelecionadas.join(", ") : "nenhum equipamento selecionado"}</p>
+
+                <div style={isMobile ? styles.listaEquipamentosMobile : styles.listaEquipamentos}>
+                  {equipamentosRelatorioFiltrados.map((e) => {
+                    const selecionado = relatorioTagsSelecionadas.includes(e.tag);
+                    return (
+                      <button key={e.tag} onClick={() => alternarEquipamentoRelatorio(e.tag)} style={{ ...styles.cardSelecao, border: selecionado ? "2px solid #111111" : "1px solid #e2e8f0", background: selecionado ? "#fef9c3" : "white" }}>
+                        <strong style={styles.tagMini}>{e.tag}</strong>
+                        <span>{e.tipo_equipamento}</span>
+                        <small>{e.modelo || "Modelo não informado"} | {e.area || "Área não informada"}</small>
+                        <strong>{selecionado ? "Selecionado" : "Selecionar"}</strong>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
 
             <section style={styles.box}>
               <h2 style={styles.boxTitulo}>Resumo por turno</h2>
