@@ -2172,7 +2172,7 @@ export default function Home() {
     }
 
     .fotos {
-      margin-top: 7px;
+      margin-top: 8px;
       display: grid;
       gap: 6px;
       break-inside: avoid;
@@ -2193,7 +2193,11 @@ export default function Home() {
     .foto-card {
       border: 1px solid #d1d5db;
       border-radius: 8px;
-      padding: 6px;
+      padding: 7px;
+      min-height: 175px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
       break-inside: avoid;
       page-break-inside: avoid;
     }
@@ -2206,10 +2210,10 @@ export default function Home() {
 
     .foto-card img {
       display: block;
-      margin: 4px auto 0;
-      width: auto;
+      margin: 5px auto 0;
+      width: 100%;
+      height: 245px;
       max-width: 100%;
-      max-height: 145px;
       object-fit: contain;
       border-radius: 6px;
       border: 1px solid #d1d5db;
@@ -2329,12 +2333,16 @@ export default function Home() {
     }
 
     .modo-compacto .foto-card {
-      padding: 5px;
+      padding: 6px;
+      min-height: 225px;
     }
 
     .modo-compacto .foto-card img {
-      max-height: 125px;
+      width: 100%;
+      height: 215px;
+      max-width: 100%;
       margin-top: 3px;
+      object-fit: contain;
     }
 
     @page {
