@@ -48,6 +48,7 @@ type Equipamento = {
 type ChecklistItemPadrao = {
   numero: number;
   descricao: string;
+  modulo?: ModuloEquipamento;
   ativo?: boolean;
 };
 
@@ -708,6 +709,7 @@ export default function Home() {
 
   const [itemChecklistNumero, setItemChecklistNumero] = useState("");
   const [itemChecklistDescricao, setItemChecklistDescricao] = useState("");
+  const [itemChecklistModulo, setItemChecklistModulo] = useState<ModuloEquipamento>("FROTA");
   const [itemChecklistEditando, setItemChecklistEditando] = useState<number | null>(null);
   const [modeloConfigSelecionado, setModeloConfigSelecionado] = useState("");
   const [usuariosApp, setUsuariosApp] = useState<PerfilUsuario[]>([]);
@@ -858,8 +860,8 @@ export default function Home() {
 
     const [eqs, itens, itensTodos, chks, resps, decs, pars, usersApp, osImportadas, agendaProg] = await Promise.all([
       supabaseRequest<Equipamento[]>("equipamentos?select=*&order=tag.asc"),
-      supabaseRequest<ChecklistItemPadrao[]>("checklist_itens_padrao?select=numero,descricao,ativo&ativo=eq.true&order=numero.asc"),
-      supabaseRequest<ChecklistItemPadrao[]>("checklist_itens_padrao?select=numero,descricao,ativo&order=numero.asc"),
+      supabaseRequest<ChecklistItemPadrao[]>("checklist_itens_padrao?select=numero,descricao,modulo,ativo&ativo=eq.true&order=modulo.asc,numero.asc"),
+      supabaseRequest<ChecklistItemPadrao[]>("checklist_itens_padrao?select=numero,descricao,modulo,ativo&order=modulo.asc,numero.asc"),
       supabaseRequest<ChecklistRegistro[]>("checklists?select=*&order=criado_em.desc&limit=1000"),
       supabaseRequest<RespostaBanco[]>("checklist_respostas?select=*&order=item_numero.asc&limit=5000"),
       supabaseRequest<DecisaoNA[]>("decisoes_na?select=*&order=criado_em.desc"),
@@ -974,7 +976,10 @@ export default function Home() {
 
   const osCmmsSemVinculo = useMemo(() => osCmms.filter((os) => !os.equipamento_id), [osCmms]);
   const checklistsDoDia = checklists.filter((c) => c.data_checklist === data);
-  const checklistsTurnoSelecionado = checklistsDoDia.filter((c) => (c.turno_codigo || "T1") === turnoSelecionado);
+  const checklistsDoMes = checklists.filter((c) => periodoMensal(c.data_checklist) === periodoMensal(data));
+  const checklistsTurnoSelecionado = ehInspecaoMensalModulo(moduloSelecionado)
+    ? checklistsDoMes
+    : checklistsDoDia.filter((c) => (c.turno_codigo || "T1") === turnoSelecionado);
   const tagsFeitasTurno = new Set(checklistsTurnoSelecionado.map((c) => normalizar(c.tag)));
   const equipamentosObrigatorios = equipamentos.filter((e) =>
     e.ativo !== false &&
@@ -1064,8 +1069,35 @@ export default function Home() {
     return Array.from(mapa.values()).sort((a, b) => a.modeloLabel.localeCompare(b.modeloLabel));
   }, [checklists, respostasBanco, decisoesNA]);
 
-  function resetarChecklist(removidos: number[] = itemIdsRemovidosModelo) {
-    setRespostas(montarRespostasPadrao(itensPadrao, removidos));
+  function itensChecklistPorModulo(modulo: ModuloEquipamento) {
+    const moduloReal = modulo === "MONOVIA" ? "MONOVIA" : "FROTA";
+    return itensPadrao.filter((i) => (i.modulo || "FROTA") === moduloReal);
+  }
+
+  function itensConfigPorModulo(modulo: ModuloEquipamento) {
+    const moduloReal = modulo === "MONOVIA" ? "MONOVIA" : "FROTA";
+    return itensConfig.filter((i) => (i.modulo || "FROTA") === moduloReal);
+  }
+
+  function ehInspecaoMensalModulo(modulo: ModuloEquipamento) {
+    return modulo === "MONOVIA";
+  }
+
+  function periodoMensal(dataISO: string) {
+    return String(dataISO || "").slice(0, 7);
+  }
+
+  function nomePeriodoOperacional(modulo: ModuloEquipamento) {
+    return ehInspecaoMensalModulo(modulo) ? "Inspeção mensal" : nomeTurno(turnoSelecionado);
+  }
+
+  function horarioReferenciaOperacional(modulo: ModuloEquipamento) {
+    return ehInspecaoMensalModulo(modulo) ? "Mensal" : horarioReferenciaTurno(turnoSelecionado);
+  }
+
+  function resetarChecklist(removidos: number[] = itemIdsRemovidosModelo, equipamentoBase: Equipamento | null = equipamentoSelecionado) {
+    const modulo = equipamentoBase ? moduloDoEquipamento(equipamentoBase) : moduloSelecionado;
+    setRespostas(montarRespostasPadrao(itensChecklistPorModulo(modulo), removidos));
     setSituacaoEquipamento("EM OPERAÇÃO");
     setObservacaoGeral("");
     setHorimetroLeitura("");
@@ -1089,11 +1121,17 @@ export default function Home() {
     setMensagem("");
     setConfirmacaoAlertaManutencao(false);
 
-    const existente = checklists.find((c) =>
-      c.data_checklist === data &&
-      c.tag === tag &&
-      (c.turno_codigo || "T1") === turnoSelecionado
-    );
+    const moduloEquipamento = equipamento ? moduloDoEquipamento(equipamento) : moduloSelecionado;
+    const existente = checklists.find((c) => {
+      const mesmaTag = c.tag === tag;
+      if (!mesmaTag) return false;
+
+      if (ehInspecaoMensalModulo(moduloEquipamento)) {
+        return periodoMensal(c.data_checklist) === periodoMensal(data);
+      }
+
+      return c.data_checklist === data && (c.turno_codigo || "T1") === turnoSelecionado;
+    });
 
     if (existente?.id) {
       setSituacaoEquipamento(existente.situacao_equipamento || "EM OPERAÇÃO");
@@ -1116,9 +1154,9 @@ export default function Home() {
           observacao: r.observacao || "",
         }));
 
-      setRespostas(resp.length ? resp : montarRespostasPadrao(itensPadrao, removidos));
+      setRespostas(resp.length ? resp : montarRespostasPadrao(itensChecklistPorModulo(moduloEquipamento), removidos));
     } else {
-      resetarChecklist(removidos);
+      resetarChecklist(removidos, equipamento);
     }
   }
 
@@ -1330,8 +1368,8 @@ export default function Home() {
         operador_nome: operador.trim(),
         operador_user_id: null,
         turno_codigo: turnoSelecionado,
-        turno_nome: nomeTurno(turnoSelecionado),
-        horario_referencia: horarioReferenciaTurno(turnoSelecionado),
+        turno_nome: nomePeriodoOperacional(moduloDoEquipamento(equipamentoAtual)),
+        horario_referencia: horarioReferenciaOperacional(moduloDoEquipamento(equipamentoAtual)),
         equipamento_id: equipamentoAtual.id || null,
         tag: equipamentoAtual.tag,
         tipo_equipamento: equipamentoAtual.tipo_equipamento,
@@ -1642,12 +1680,14 @@ export default function Home() {
   function limparFormularioItemChecklist() {
     setItemChecklistNumero("");
     setItemChecklistDescricao("");
+    setItemChecklistModulo("FROTA");
     setItemChecklistEditando(null);
   }
 
   function editarItemChecklist(item: ChecklistItemPadrao) {
     setItemChecklistNumero(String(item.numero));
     setItemChecklistDescricao(item.descricao);
+    setItemChecklistModulo((item.modulo || "FROTA") as ModuloEquipamento);
     setItemChecklistEditando(item.numero);
     setMensagem("");
   }
@@ -1671,12 +1711,15 @@ export default function Home() {
     try {
       setCarregando(true);
 
-      await supabaseRequest<ChecklistItemPadrao[]>("checklist_itens_padrao?on_conflict=numero", {
+      const moduloItem = itemChecklistModulo === "MONOVIA" ? "MONOVIA" : "FROTA";
+
+      await supabaseRequest<ChecklistItemPadrao[]>("checklist_itens_padrao?on_conflict=modulo,numero", {
         method: "POST",
         headers: { Prefer: "resolution=merge-duplicates,return=representation" },
         body: JSON.stringify({
           numero,
           descricao,
+          modulo: moduloItem,
           ativo: true,
         }),
       });
@@ -1699,7 +1742,7 @@ export default function Home() {
     try {
       setCarregando(true);
 
-      await supabaseRequest<ChecklistItemPadrao[]>(`checklist_itens_padrao?numero=eq.${item.numero}`, {
+      await supabaseRequest<ChecklistItemPadrao[]>(`checklist_itens_padrao?modulo=eq.${encodeURIComponent(item.modulo || "FROTA")}&numero=eq.${item.numero}`, {
         method: "PATCH",
         headers: { Prefer: "return=representation" },
         body: JSON.stringify({ ativo }),
@@ -2551,11 +2594,15 @@ export default function Home() {
             <Campo label="Data">
               <input type="date" value={data} onChange={(e) => setData(e.target.value)} style={styles.input} />
             </Campo>
-            <Campo label="Turno">
-              <select value={turnoSelecionado} onChange={(e) => setTurnoSelecionado(e.target.value as TurnoCodigo)} style={styles.input}>
-                <option value="T1">Turno 1 - 06h</option>
-                <option value="T2">Turno 2 - 18h</option>
-              </select>
+            <Campo label={moduloSelecionado === "MONOVIA" ? "Periodicidade" : "Turno"}>
+              {moduloSelecionado === "MONOVIA" ? (
+                <input value="Inspeção mensal" readOnly style={styles.input} />
+              ) : (
+                <select value={turnoSelecionado} onChange={(e) => setTurnoSelecionado(e.target.value as TurnoCodigo)} style={styles.input}>
+                  <option value="T1">Turno 1 - 06h</option>
+                  <option value="T2">Turno 2 - 18h</option>
+                </select>
+              )}
             </Campo>
             <Campo label="Área">
               <select value={area} onChange={(e) => setArea(e.target.value)} style={styles.input}>
@@ -3143,7 +3190,14 @@ export default function Home() {
                 ou retirar apenas para todos os equipamentos do mesmo modelo.
               </p>
 
-              <div style={isMobile ? styles.gridMobile : styles.grid2}>
+              <div style={isMobile ? styles.gridMobile : styles.grid3}>
+                <Campo label="Módulo do checklist">
+                  <select value={itemChecklistModulo} onChange={(e) => setItemChecklistModulo(e.target.value as ModuloEquipamento)} style={styles.input}>
+                    <option value="FROTA">Frota</option>
+                    <option value="MONOVIA">Monovia / Talha</option>
+                  </select>
+                </Campo>
+
                 <Campo label="Número do item">
                   <input
                     value={itemChecklistNumero}
@@ -3189,10 +3243,11 @@ export default function Home() {
               </section>
 
               <div style={styles.tabelaEquipamentos}>
-                {[...itensConfig].sort((a, b) => a.numero - b.numero).map((item) => (
-                  <div key={item.numero} style={isMobile ? styles.linhaEquipamentoMobile : styles.linhaEquipamento}>
+                {itensConfigPorModulo(itemChecklistModulo).sort((a, b) => a.numero - b.numero).map((item) => (
+                  <div key={`${item.modulo || "FROTA"}-${item.numero}`} style={isMobile ? styles.linhaEquipamentoMobile : styles.linhaEquipamento}>
                     <div>
                       <strong>{item.numero}. {item.descricao}</strong><br />
+                      <small>Módulo: {nomeModulo((item.modulo || "FROTA") as ModuloEquipamento)}</small><br />
                       <span style={item.ativo === false ? styles.badgeOpcional : styles.badgeObrigatorio}>
                         {item.ativo === false ? "Inativo geral / retirado de todos" : "Ativo geral"}
                       </span>
