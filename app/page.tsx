@@ -15,6 +15,8 @@ type StatusItem = "OK" | "NÃO OK" | "N/A" | "";
 type TelaLogin = "ENTRAR" | "CRIAR";
 type TurnoCodigo = "T1" | "T2";
 type ModuloEquipamento = "FROTA" | "MONOVIA" | "TODOS";
+type PeriodicidadeChecklist = "DIARIO" | "SEMANAL" | "MENSAL";
+type AdminPagina = "DASHBOARD" | "HOJE" | "EQUIPAMENTOS" | "HISTORICO" | "USUARIOS" | "NA_VALIDACAO" | "CHECKLIST" | "RETIRAR_MODELO" | "PLANO_MESTRE" | "MAPA_52" | "OS_MANUAL" | "PARADAS" | "RELATORIOS" | "CMMS";
 
 type PerfilUsuario = {
   id?: string;
@@ -43,6 +45,7 @@ type Equipamento = {
   email_supervisor?: string;
   whatsapp_supervisor?: string;
   origem?: string;
+  periodicidade_checklist?: PeriodicidadeChecklist;
 };
 
 type ChecklistItemPadrao = {
@@ -170,6 +173,56 @@ type AgendaManutencao = {
   atualizado_em?: string;
 };
 
+type PlanoPreventivo = {
+  id?: string;
+  tag: string;
+  tag_normalizada: string;
+  equipamento_id?: string | null;
+  modelo_plano: string;
+  plano_tipo: "QUINZENAL" | "MENSAL" | "TRIMESTRAL" | "SEMESTRAL";
+  checklist_referencia?: string;
+  descricao_mapa?: string;
+  periodicidade_valor: number;
+  periodicidade_unidade: "DIAS" | "MESES";
+  base_recalculo: "EXECUCAO" | "PROGRAMADO";
+  ultima_execucao?: string | null;
+  proxima_data?: string | null;
+  ativo: boolean;
+  origem?: string;
+};
+
+type PlanoPreventivoItem = {
+  id?: number;
+  modelo_plano: string;
+  eqto?: string;
+  checklist: string;
+  plano_tipo?: string;
+  sistema?: string;
+  operacao: string;
+  codigo?: string;
+  qtde?: number | null;
+  um?: string;
+  troca?: string;
+  valor_estimado?: number | null;
+};
+
+type ProgramacaoPreventiva = {
+  id?: string;
+  plano_id: string;
+  tag: string;
+  tag_normalizada: string;
+  plano_tipo: string;
+  ano: number;
+  semana_iso: number;
+  data_programada: string;
+  status: "PROGRAMADO" | "EXECUTADO" | "ATRASADO" | "CANCELADO";
+  numero_os?: string;
+  data_execucao?: string | null;
+  executor?: string;
+  observacao?: string;
+  origem?: string;
+};
+
 const itensFallback: ChecklistItemPadrao[] = [
   { numero: 1, descricao: "Estado geral do equipamento / avarias visíveis" },
   { numero: 2, descricao: "Rodas, pneus e rodízios sem desgaste excessivo ou travamento" },
@@ -200,6 +253,7 @@ const equipamentoVazio: Equipamento = {
   checklist_obrigatorio: true,
   ativo: true,
   status_operacional: "DISPONIVEL",
+  periodicidade_checklist: "DIARIO",
   origem: "Cadastro manual",
 };
 
@@ -240,16 +294,16 @@ function horaBrasil() {
 }
 
 function turnoAutomatico(): TurnoCodigo {
-  const hora = Number(partesDataHoraBrasil().hora);
-  return hora < 15 ? "T1" : "T2";
+  // V15: o checklist da frota passa a ser executado uma única vez por período, sem Turno 2.
+  return "T1";
 }
 
-function nomeTurno(turno: TurnoCodigo) {
-  return turno === "T1" ? "Turno 1 - 06h" : "Turno 2 - 18h";
+function nomeTurno(_turno: TurnoCodigo) {
+  return "Checklist diário";
 }
 
-function horarioReferenciaTurno(turno: TurnoCodigo) {
-  return turno === "T1" ? "06:00" : "18:00";
+function horarioReferenciaTurno(_turno: TurnoCodigo) {
+  return "Único";
 }
 
 function formatarDataBR(dataISO: string) {
@@ -409,6 +463,96 @@ function dataISOParaBR(data: string) {
   return `${match[3]}/${match[2]}/${match[1]}`;
 }
 
+function dataUTC(dataISO: string) {
+  const [a, m, d] = String(dataISO || "").slice(0, 10).split("-").map(Number);
+  return new Date(Date.UTC(a || 1970, (m || 1) - 1, d || 1));
+}
+
+function dataISOdeDate(d: Date) {
+  return d.toISOString().slice(0, 10);
+}
+
+function diasEntre(inicio: string, fim: string) {
+  return Math.max(0, Math.floor((dataUTC(fim).getTime() - dataUTC(inicio).getTime()) / 86400000));
+}
+
+function inicioSemanaISO(dataISO: string) {
+  const d = dataUTC(dataISO);
+  const dia = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() - dia + 1);
+  return dataISOdeDate(d);
+}
+
+function fimSemanaISO(dataISO: string) {
+  const d = dataUTC(inicioSemanaISO(dataISO));
+  d.setUTCDate(d.getUTCDate() + 6);
+  return dataISOdeDate(d);
+}
+
+function numeroSemanaISO(dataISO: string) {
+  const d = dataUTC(dataISO);
+  const temp = new Date(d.getTime());
+  temp.setUTCDate(temp.getUTCDate() + 4 - (temp.getUTCDay() || 7));
+  const anoInicio = new Date(Date.UTC(temp.getUTCFullYear(), 0, 1));
+  const semana = Math.ceil((((temp.getTime() - anoInicio.getTime()) / 86400000) + 1) / 7);
+  return { ano: temp.getUTCFullYear(), semana };
+}
+
+function semanasNoAnoISO(ano: number) {
+  return numeroSemanaISO(`${ano}-12-28`).semana;
+}
+
+function textoTempoAberto(dias: number) {
+  if (dias <= 0) return "hoje";
+  if (dias === 1) return "há 1 dia";
+  if (dias < 7) return `há ${dias} dias`;
+  const semanas = Math.floor(dias / 7);
+  if (semanas === 1) return "há 1 semana";
+  if (dias < 30) return `há ${semanas} semanas`;
+  const meses = Math.floor(dias / 30);
+  return meses === 1 ? "há 1 mês" : `há ${meses} meses`;
+}
+
+function periodicidadeChecklistDoEquipamento(e: Equipamento | null): PeriodicidadeChecklist {
+  if (!e) return "DIARIO";
+  if (e.periodicidade_checklist === "DIARIO" || e.periodicidade_checklist === "SEMANAL" || e.periodicidade_checklist === "MENSAL") {
+    return e.periodicidade_checklist;
+  }
+  return moduloDoEquipamento(e) === "MONOVIA" ? "MENSAL" : "DIARIO";
+}
+
+function nomePeriodicidadeChecklist(p: PeriodicidadeChecklist) {
+  if (p === "SEMANAL") return "Semanal";
+  if (p === "MENSAL") return "Mensal";
+  return "Diário";
+}
+
+function checklistEstaNoPeriodo(dataChecklist: string, dataReferencia: string, periodicidade: PeriodicidadeChecklist) {
+  if (periodicidade === "MENSAL") return dataChecklist.slice(0, 7) === dataReferencia.slice(0, 7);
+  if (periodicidade === "SEMANAL") return inicioSemanaISO(dataChecklist) === inicioSemanaISO(dataReferencia);
+  return dataChecklist.slice(0, 10) === dataReferencia.slice(0, 10);
+}
+
+function descricaoPeriodoChecklist(e: Equipamento | null, dataReferencia: string) {
+  const p = periodicidadeChecklistDoEquipamento(e);
+  if (p === "MENSAL") return `Inspeção mensal - ${dataReferencia.slice(0, 7)}`;
+  if (p === "SEMANAL") return `Inspeção semanal - ${dataISOParaBR(inicioSemanaISO(dataReferencia))} a ${dataISOParaBR(fimSemanaISO(dataReferencia))}`;
+  return `Checklist diário - ${dataISOParaBR(dataReferencia)}`;
+}
+
+function adicionarPeriodicidade(dataISO: string, valor: number, unidade: "DIAS" | "MESES") {
+  const d = dataUTC(dataISO);
+  if (unidade === "DIAS") {
+    d.setUTCDate(d.getUTCDate() + Number(valor || 0));
+  } else {
+    const diaOriginal = d.getUTCDate();
+    d.setUTCDate(1);
+    d.setUTCMonth(d.getUTCMonth() + Number(valor || 0));
+    const ultimoDia = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
+    d.setUTCDate(Math.min(diaOriginal, ultimoDia));
+  }
+  return dataISOdeDate(d);
+}
 function classificarAlertaAgenda(agenda: AgendaManutencao, hoje = hojeISO()) {
   const tipo = agenda.tipo_manutencao || "Manutenção programada";
   const data = dataISOParaBR(agenda.data_programada);
@@ -664,6 +808,9 @@ export default function Home() {
   const [paradasManutencao, setParadasManutencao] = useState<ParadaManutencao[]>([]);
   const [osCmms, setOsCmms] = useState<OsCmms[]>([]);
   const [agendaManutencao, setAgendaManutencao] = useState<AgendaManutencao[]>([]);
+  const [planosPreventivos, setPlanosPreventivos] = useState<PlanoPreventivo[]>([]);
+  const [itensPlanoPreventivo, setItensPlanoPreventivo] = useState<PlanoPreventivoItem[]>([]);
+  const [programacoesPreventivas, setProgramacoesPreventivas] = useState<ProgramacaoPreventiva[]>([]);
   const [resultadoImportacaoCMMS, setResultadoImportacaoCMMS] = useState<{
     total: number;
     importadas: number;
@@ -681,7 +828,7 @@ export default function Home() {
   const [operador, setOperador] = useState("");
   const [moduloSelecionado, setModuloSelecionado] = useState<ModuloEquipamento>("FROTA");
   const [data, setData] = useState(hojeISO());
-  const [turnoSelecionado, setTurnoSelecionado] = useState<TurnoCodigo>(turnoAutomatico());
+  const [turnoSelecionado] = useState<TurnoCodigo>("T1");
   const [area, setArea] = useState("TODAS");
   const [busca, setBusca] = useState("");
   const [tagSelecionada, setTagSelecionada] = useState("");
@@ -703,7 +850,19 @@ export default function Home() {
   const [equipamentoEdicao, setEquipamentoEdicao] = useState<Equipamento>(equipamentoVazio);
   const [editandoTag, setEditandoTag] = useState("");
   const [buscaCadastro, setBuscaCadastro] = useState("");
-  const [filtroAdmin, setFiltroAdmin] = useState<"TODOS" | "AVARIAS" | "PENDENTES" | "CONCLUIDOS" | "RELATORIOS" | "CMMS" | "AGENDA">("TODOS");
+  const [filtroAdmin, setFiltroAdmin] = useState<AdminPagina>("DASHBOARD");
+  const [dashboardDetalhe, setDashboardDetalhe] = useState<"" | "OK" | "AVARIAS" | "PENDENTES" | "MANUTENCAO" | "PREVENTIVAS" | "NA">("");
+  const [historicoTag, setHistoricoTag] = useState("");
+  const [planoBusca, setPlanoBusca] = useState("");
+  const [planoTipoFiltro, setPlanoTipoFiltro] = useState("TODOS");
+  const [planoExpandidoId, setPlanoExpandidoId] = useState("");
+  const [mapaAno, setMapaAno] = useState(Number(hojeISO().slice(0,4)));
+  const [mapaBusca, setMapaBusca] = useState("");
+  const [osPlanoId, setOsPlanoId] = useState("");
+  const [osNumero, setOsNumero] = useState("");
+  const [osDataExecucao, setOsDataExecucao] = useState(hojeISO());
+  const [osExecutor, setOsExecutor] = useState("");
+  const [osObservacao, setOsObservacao] = useState("");
   const [tagReservaSelecionada, setTagReservaSelecionada] = useState("");
   const [observacaoAdminParada, setObservacaoAdminParada] = useState("");
 
@@ -858,17 +1017,20 @@ export default function Home() {
   async function carregarDados() {
     setMensagem("");
 
-    const [eqs, itens, itensTodos, chks, resps, decs, pars, usersApp, osImportadas, agendaProg] = await Promise.all([
+    const [eqs, itens, itensTodos, chks, resps, decs, pars, usersApp, osImportadas, agendaProg, planosPrev, itensPrev, programacoesPrev] = await Promise.all([
       supabaseRequest<Equipamento[]>("equipamentos?select=*&order=tag.asc"),
       supabaseRequest<ChecklistItemPadrao[]>("checklist_itens_padrao?select=numero,descricao,modulo,ativo&ativo=eq.true&order=modulo.asc,numero.asc"),
       supabaseRequest<ChecklistItemPadrao[]>("checklist_itens_padrao?select=numero,descricao,modulo,ativo&order=modulo.asc,numero.asc"),
-      supabaseRequest<ChecklistRegistro[]>("checklists?select=*&order=criado_em.desc&limit=1000"),
-      supabaseRequest<RespostaBanco[]>("checklist_respostas?select=*&order=item_numero.asc&limit=5000"),
+      supabaseRequest<ChecklistRegistro[]>("checklists?select=*&order=criado_em.desc&limit=5000"),
+      supabaseRequest<RespostaBanco[]>("checklist_respostas?select=*&order=item_numero.asc&limit=25000"),
       supabaseRequest<DecisaoNA[]>("decisoes_na?select=*&order=criado_em.desc"),
       supabaseRequest<ParadaManutencao[]>("paradas_manutencao?select=*&status=neq.FINALIZADA&order=criado_em.desc"),
       supabaseRequest<PerfilUsuario[]>("usuarios_app?select=*&order=nome.asc"),
       supabaseRequest<OsCmms[]>("os_cmms?select=*&order=importado_em.desc&limit=5000").catch(() => []),
       supabaseRequest<AgendaManutencao[]>("agenda_manutencao?select=*&order=data_programada.asc&limit=3000").catch(() => []),
+      supabaseRequest<PlanoPreventivo[]>("planos_preventivos?select=*&ativo=eq.true&order=tag.asc,plano_tipo.asc&limit=2000").catch(() => []),
+      supabaseRequest<PlanoPreventivoItem[]>("plano_preventivo_itens?select=*&order=modelo_plano.asc,checklist.asc,id.asc&limit=5000").catch(() => []),
+      supabaseRequest<ProgramacaoPreventiva[]>("programacoes_preventivas?select=*&order=data_programada.asc&limit=5000").catch(() => []),
     ]);
 
     setEquipamentos(eqs || []);
@@ -881,6 +1043,9 @@ export default function Home() {
     setUsuariosApp(usersApp || []);
     setOsCmms(osImportadas || []);
     setAgendaManutencao(agendaProg || []);
+    setPlanosPreventivos(planosPrev || []);
+    setItensPlanoPreventivo(itensPrev || []);
+    setProgramacoesPreventivas(programacoesPrev || []);
   }
 
     const areas = useMemo(() => {
@@ -976,30 +1141,38 @@ export default function Home() {
 
   const osCmmsSemVinculo = useMemo(() => osCmms.filter((os) => !os.equipamento_id), [osCmms]);
   const checklistsDoDia = checklists.filter((c) => c.data_checklist === data);
-  const checklistsDoMes = checklists.filter((c) => periodoMensal(c.data_checklist) === periodoMensal(data));
-  const checklistsTurnoSelecionado = ehInspecaoMensalModulo(moduloSelecionado)
-    ? checklistsDoMes
-    : checklistsDoDia.filter((c) => (c.turno_codigo || "T1") === turnoSelecionado);
-  const tagsFeitasTurno = new Set(checklistsTurnoSelecionado.map((c) => normalizar(c.tag)));
+
+  function checklistDoPeriodo(e: Equipamento, dataReferencia = data) {
+    const periodicidade = periodicidadeChecklistDoEquipamento(e);
+    return checklists
+      .filter((c) => normalizarTagOS(c.tag) === normalizarTagOS(e.tag) && checklistEstaNoPeriodo(c.data_checklist, dataReferencia, periodicidade))
+      .sort((a, b) => `${b.data_checklist} ${b.hora_checklist || ""}`.localeCompare(`${a.data_checklist} ${a.hora_checklist || ""}`))[0];
+  }
+
   const equipamentosObrigatorios = equipamentos.filter((e) =>
     e.ativo !== false &&
     e.checklist_obrigatorio !== false &&
     e.status_operacional !== "EM_MANUTENCAO" &&
     (moduloSelecionado === "TODOS" || moduloDoEquipamento(e) === moduloSelecionado)
   );
-  const pendentesHoje = equipamentosObrigatorios.filter((e) => !tagsFeitasTurno.has(normalizar(e.tag)));
-  const concluidosHoje = checklistsTurnoSelecionado.filter((c) => equipamentosObrigatorios.some((e) => normalizar(e.tag) === normalizar(c.tag))).length;
+
+  const equipamentosComChecklistPeriodo = equipamentosObrigatorios.filter((e) => Boolean(checklistDoPeriodo(e, data)));
+  const tagsFeitasTurno = new Set(equipamentosComChecklistPeriodo.map((e) => normalizar(e.tag)));
+  const pendentesHoje = equipamentosObrigatorios.filter((e) => !checklistDoPeriodo(e, data));
+  const concluidosHoje = equipamentosComChecklistPeriodo.length;
+  const checklistsTurnoSelecionado = equipamentosComChecklistPeriodo
+    .map((e) => checklistDoPeriodo(e, data))
+    .filter(Boolean) as ChecklistRegistro[];
   const comAvariaHoje = checklistsTurnoSelecionado.filter((c) => c.resultado_final === "COM AVARIA");
   const horaAtual = Number(partesDataHoraBrasil().hora);
 
-  const checklistsT1 = checklistsDoDia.filter((c) => (c.turno_codigo || "T1") === "T1");
-  const checklistsT2 = checklistsDoDia.filter((c) => (c.turno_codigo || "T1") === "T2");
-  const tagsT1 = new Set(checklistsT1.map((c) => normalizar(c.tag)));
-  const tagsT2 = new Set(checklistsT2.map((c) => normalizar(c.tag)));
-  const pendentesT1 = equipamentosObrigatorios.filter((e) => !tagsT1.has(normalizar(e.tag)));
-  const pendentesT2 = equipamentosObrigatorios.filter((e) => !tagsT2.has(normalizar(e.tag)));
-  const avariasT1 = checklistsT1.filter((c) => c.resultado_final === "COM AVARIA");
-  const avariasT2 = checklistsT2.filter((c) => c.resultado_final === "COM AVARIA");
+  // Compatibilidade com histórico antigo: o sistema não cria mais Turno 2.
+  const checklistsT1 = checklistsDoDia;
+  const checklistsT2: ChecklistRegistro[] = [];
+  const pendentesT1 = pendentesHoje;
+  const pendentesT2: Equipamento[] = [];
+  const avariasT1 = checklistsDoDia.filter((c) => c.resultado_final === "COM AVARIA");
+  const avariasT2: ChecklistRegistro[] = [];
 
   const equipamentosReservaDisponiveis = equipamentos.filter((e) =>
     e.ativo !== false &&
@@ -1069,6 +1242,158 @@ export default function Home() {
     return Array.from(mapa.values()).sort((a, b) => a.modeloLabel.localeCompare(b.modeloLabel));
   }, [checklists, respostasBanco, decisoesNA]);
 
+  const hojeDashboard = hojeISO();
+  const equipamentosAtivosDashboard = equipamentos.filter((e) => e.ativo !== false);
+  const equipamentosObrigatoriosDashboard = equipamentosAtivosDashboard.filter((e) => e.checklist_obrigatorio !== false && e.status_operacional !== "EM_MANUTENCAO");
+  const pendentesChecklistDashboard = equipamentosObrigatoriosDashboard.filter((e) => {
+    const periodicidade = periodicidadeChecklistDoEquipamento(e);
+    return !checklists.some((c) => normalizarTagOS(c.tag) === normalizarTagOS(e.tag) && checklistEstaNoPeriodo(c.data_checklist, hojeDashboard, periodicidade));
+  });
+
+  const ultimoChecklistPorTag = useMemo(() => {
+    const mapa = new Map<string, ChecklistRegistro>();
+    [...checklists]
+      .sort((a, b) => `${a.data_checklist} ${a.hora_checklist || ""}`.localeCompare(`${b.data_checklist} ${b.hora_checklist || ""}`))
+      .forEach((c) => mapa.set(normalizarTagOS(c.tag), c));
+    return mapa;
+  }, [checklists]);
+
+  const checklistsAtualPorTag = useMemo(() => {
+    const mapa = new Map<string, ChecklistRegistro>();
+    equipamentosAtivosDashboard.forEach((e) => {
+      const periodicidade = periodicidadeChecklistDoEquipamento(e);
+      const atual = checklists
+        .filter((c) => normalizarTagOS(c.tag) === normalizarTagOS(e.tag) && checklistEstaNoPeriodo(c.data_checklist, hojeDashboard, periodicidade))
+        .sort((a, b) => `${b.data_checklist} ${b.hora_checklist || ""}`.localeCompare(`${a.data_checklist} ${a.hora_checklist || ""}`))[0];
+      if (atual) mapa.set(normalizarTagOS(e.tag), atual);
+    });
+    return mapa;
+  }, [equipamentos, checklists]);
+
+  const maquinasManutencaoDashboard = equipamentosAtivosDashboard.filter((e) => e.status_operacional === "EM_MANUTENCAO" || paradasManutencao.some((p) => normalizarTagOS(p.tag_original) === normalizarTagOS(e.tag)));
+  const maquinasAvariaDashboard = equipamentosAtivosDashboard.filter((e) => {
+    if (maquinasManutencaoDashboard.some((m) => normalizarTagOS(m.tag) === normalizarTagOS(e.tag))) return false;
+    return checklistsAtualPorTag.get(normalizarTagOS(e.tag))?.resultado_final === "COM AVARIA";
+  });
+  const maquinasOkDashboard = equipamentosAtivosDashboard.filter((e) => {
+    if (maquinasManutencaoDashboard.some((m) => normalizarTagOS(m.tag) === normalizarTagOS(e.tag))) return false;
+    return checklistsAtualPorTag.get(normalizarTagOS(e.tag))?.resultado_final === "CONFORME";
+  });
+
+  const checklistsFeitosHojeDashboard = checklists
+    .filter((c) => c.data_checklist === hojeDashboard)
+    .sort((a, b) => String(b.hora_checklist || "").localeCompare(String(a.hora_checklist || "")));
+
+  const sugestoesNAPendentes = sugestoesNA.filter((s: any) => !s.decisao);
+
+  const programacoesPreventivasAbertas = programacoesPreventivas.filter((p) => p.status === "PROGRAMADO" || p.status === "ATRASADO");
+  const preventivasAtrasadasDashboard = programacoesPreventivasAbertas.filter((p) => p.status === "ATRASADO" || (p.status === "PROGRAMADO" && p.data_programada < hojeDashboard));
+  const limiteProximos7 = adicionarPeriodicidade(hojeDashboard, 7, "DIAS");
+  const preventivasProximasDashboard = programacoesPreventivasAbertas.filter((p) => p.data_programada >= hojeDashboard && p.data_programada <= limiteProximos7);
+  const preventivasExecutadasHoje = programacoesPreventivas.filter((p) => p.status === "EXECUTADO" && p.data_execucao === hojeDashboard);
+
+  const defeitosAbertosDashboard = useMemo(() => {
+    const chkPorId = new Map(checklists.filter((c) => c.id).map((c) => [c.id as string, c]));
+    const series = new Map<string, Array<{ chk: ChecklistRegistro; resp: RespostaBanco }>>();
+
+    respostasBanco.forEach((resp) => {
+      const chk = chkPorId.get(resp.checklist_id);
+      if (!chk) return;
+      const key = `${normalizarTagOS(chk.tag)}|${resp.item_numero}`;
+      if (!series.has(key)) series.set(key, []);
+      series.get(key)!.push({ chk, resp });
+    });
+
+    const abertos: Array<{
+      tag: string; itemNumero: number; itemDescricao: string; observacao: string; operador: string; inicio: string; ultimo: string; dias: number; checklistId?: string;
+    }> = [];
+
+    series.forEach((eventos) => {
+      eventos.sort((a, b) => `${a.chk.data_checklist} ${a.chk.hora_checklist || ""}`.localeCompare(`${b.chk.data_checklist} ${b.chk.hora_checklist || ""}`));
+      const ultimo = eventos[eventos.length - 1];
+      if (!ultimo || ultimo.resp.status !== "NÃO OK") return;
+
+      let inicio = ultimo.chk.data_checklist;
+      for (let i = eventos.length - 2; i >= 0; i--) {
+        const ev = eventos[i];
+        if (ev.resp.status === "OK") break;
+        if (ev.resp.status === "NÃO OK") inicio = ev.chk.data_checklist;
+      }
+
+      abertos.push({
+        tag: ultimo.chk.tag,
+        itemNumero: ultimo.resp.item_numero,
+        itemDescricao: ultimo.resp.item_descricao,
+        observacao: ultimo.resp.observacao || "Sem observação",
+        operador: ultimo.chk.operador_nome,
+        inicio,
+        ultimo: ultimo.chk.data_checklist,
+        dias: diasEntre(inicio, hojeDashboard),
+        checklistId: ultimo.chk.id,
+      });
+    });
+
+    return abertos.sort((a, b) => b.dias - a.dias || a.tag.localeCompare(b.tag));
+  }, [checklists, respostasBanco]);
+
+  const checklistsUltimos7Dias = useMemo(() => {
+    const resultado: Array<{ data: string; total: number }> = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = dataUTC(hojeDashboard);
+      d.setUTCDate(d.getUTCDate() - i);
+      const iso = dataISOdeDate(d);
+      resultado.push({ data: iso, total: checklists.filter((c) => c.data_checklist === iso).length });
+    }
+    return resultado;
+  }, [checklists]);
+
+  const cargaPreventiva8Semanas = useMemo(() => {
+    const inicio = dataUTC(inicioSemanaISO(hojeDashboard));
+    const out: Array<{ ano: number; semana: number; label: string; total: number; executado: number }> = [];
+    for (let i = 0; i < 8; i++) {
+      const d = new Date(inicio.getTime());
+      d.setUTCDate(d.getUTCDate() + i * 7);
+      const iso = dataISOdeDate(d);
+      const sw = numeroSemanaISO(iso);
+      const programas = programacoesPreventivas.filter((p) => p.ano === sw.ano && p.semana_iso === sw.semana);
+      out.push({ ano: sw.ano, semana: sw.semana, label: `S${String(sw.semana).padStart(2, "0")}`, total: programas.length, executado: programas.filter((p) => p.status === "EXECUTADO").length });
+    }
+    return out;
+  }, [programacoesPreventivas]);
+
+  const planosFiltradosAdmin = useMemo(() => {
+    const termo = normalizar(planoBusca);
+    return planosPreventivos.filter((p) => {
+      if (planoTipoFiltro !== "TODOS" && p.plano_tipo !== planoTipoFiltro) return false;
+      if (!termo) return true;
+      return normalizar(`${p.tag} ${p.modelo_plano} ${p.plano_tipo} ${p.checklist_referencia || ""}`).includes(termo);
+    });
+  }, [planosPreventivos, planoBusca, planoTipoFiltro]);
+
+  const mapaPlanosFiltrados = useMemo(() => {
+    const termo = normalizar(mapaBusca);
+    return planosPreventivos.filter((p) => !termo || normalizar(`${p.tag} ${p.modelo_plano} ${p.plano_tipo}`).includes(termo));
+  }, [planosPreventivos, mapaBusca]);
+
+  const planoOsSelecionado = planosPreventivos.find((p) => p.id === osPlanoId) || null;
+
+  const programacaoPorPlanoSemana = useMemo(() => {
+    const mapa = new Map<string, ProgramacaoPreventiva>();
+    programacoesPreventivas.forEach((p) => mapa.set(`${p.plano_id}|${p.ano}|${p.semana_iso}`, p));
+    return mapa;
+  }, [programacoesPreventivas]);
+
+  const equipamentoHistorico = equipamentos.find((e) => e.tag === historicoTag) || null;
+  const historicoChecklists = checklists
+    .filter((c) => normalizarTagOS(c.tag) === normalizarTagOS(historicoTag))
+    .sort((a, b) => `${b.data_checklist} ${b.hora_checklist || ""}`.localeCompare(`${a.data_checklist} ${a.hora_checklist || ""}`));
+  const historicoProgramacoes = programacoesPreventivas
+    .filter((p) => normalizarTagOS(p.tag) === normalizarTagOS(historicoTag))
+    .sort((a, b) => b.data_programada.localeCompare(a.data_programada));
+  const programacoesExecutadasRecentes = programacoesPreventivas
+    .filter((p) => p.status === "EXECUTADO")
+    .sort((a, b) => String(b.data_execucao || b.data_programada).localeCompare(String(a.data_execucao || a.data_programada)));
+
   function itensChecklistPorModulo(modulo: ModuloEquipamento) {
     const moduloReal = modulo === "MONOVIA" ? "MONOVIA" : "FROTA";
     return itensPadrao.filter((i) => (i.modulo || "FROTA") === moduloReal);
@@ -1122,16 +1447,10 @@ export default function Home() {
     setConfirmacaoAlertaManutencao(false);
 
     const moduloEquipamento = equipamento ? moduloDoEquipamento(equipamento) : moduloSelecionado;
-    const existente = checklists.find((c) => {
-      const mesmaTag = c.tag === tag;
-      if (!mesmaTag) return false;
-
-      if (ehInspecaoMensalModulo(moduloEquipamento)) {
-        return periodoMensal(c.data_checklist) === periodoMensal(data);
-      }
-
-      return c.data_checklist === data && (c.turno_codigo || "T1") === turnoSelecionado;
-    });
+    const periodicidadeEquipamento = periodicidadeChecklistDoEquipamento(equipamento);
+    const existente = checklists
+      .filter((c) => c.tag === tag && checklistEstaNoPeriodo(c.data_checklist, data, periodicidadeEquipamento))
+      .sort((a, b) => `${b.data_checklist} ${b.hora_checklist || ""}`.localeCompare(`${a.data_checklist} ${a.hora_checklist || ""}`))[0];
 
     if (existente?.id) {
       setSituacaoEquipamento(existente.situacao_equipamento || "EM OPERAÇÃO");
@@ -1355,21 +1674,26 @@ export default function Home() {
 
     const situacaoAlerta = situacaoEquipamento !== "EM OPERAÇÃO" && situacaoEquipamento !== "PARADO NA ÁREA";
     const resultado = respostas.some((r) => r.status === "NÃO OK") || situacaoAlerta || avariaImpedeUso ? "COM AVARIA" : "CONFORME";
+    const periodicidadeAtual = periodicidadeChecklistDoEquipamento(equipamentoAtual);
+    const checklistExistentePeriodo = checklists
+      .filter((c) => normalizarTagOS(c.tag) === normalizarTagOS(equipamentoAtual.tag) && checklistEstaNoPeriodo(c.data_checklist, data, periodicidadeAtual))
+      .sort((a, b) => `${b.data_checklist} ${b.hora_checklist || ""}`.localeCompare(`${a.data_checklist} ${a.hora_checklist || ""}`))[0];
+    const dataRegistroChecklist = checklistExistentePeriodo?.data_checklist || data;
 
     try {
       setCarregando(true);
 
-      const pastaFotos = `${data}/${normalizar(equipamentoAtual.tag)}`;
+      const pastaFotos = `${dataRegistroChecklist}/${normalizar(equipamentoAtual.tag)}`;
       const fotoEvidenciaUrl = fotoEvidencia ? await enviarFotoStorage(fotoEvidencia, pastaFotos, "evidencia") : "";
       const fotoHorimetroUrl = fotoHorimetro ? await enviarFotoStorage(fotoHorimetro, pastaFotos, "horimetro") : "";
 
       const payload: ChecklistRegistro = {
-        data_checklist: data,
+        data_checklist: dataRegistroChecklist,
         operador_nome: operador.trim(),
         operador_user_id: null,
-        turno_codigo: turnoSelecionado,
-        turno_nome: nomePeriodoOperacional(moduloDoEquipamento(equipamentoAtual)),
-        horario_referencia: horarioReferenciaOperacional(moduloDoEquipamento(equipamentoAtual)),
+        turno_codigo: "T1",
+        turno_nome: descricaoPeriodoChecklist(equipamentoAtual, data),
+        horario_referencia: nomePeriodicidadeChecklist(periodicidadeAtual),
         equipamento_id: equipamentoAtual.id || null,
         tag: equipamentoAtual.tag,
         tipo_equipamento: equipamentoAtual.tipo_equipamento,
@@ -1437,7 +1761,7 @@ export default function Home() {
 
       await carregarDados();
       setErrosChecklist([]);
-      setMensagem(`Checklist da ${equipamentoAtual.tag} finalizado no ${nomeTurno(turnoSelecionado)}: ${resultado}.`);
+      setMensagem(`Checklist da ${equipamentoAtual.tag} finalizado (${nomePeriodicidadeChecklist(periodicidadeAtual)}): ${resultado}.`);
       setTelaOperador("LISTA");
     } catch (err: any) {
       setMensagem(`Erro ao salvar checklist: ${err.message || err}`);
@@ -1467,6 +1791,7 @@ export default function Home() {
       local_correto: equipamentoEdicao.local_correto?.trim().toUpperCase() || "",
       area: equipamentoEdicao.area?.trim().toUpperCase() || "",
       checklist_obrigatorio: equipamentoEdicao.checklist_obrigatorio !== false,
+      periodicidade_checklist: periodicidadeChecklistDoEquipamento(equipamentoEdicao),
       ativo: equipamentoEdicao.ativo !== false,
       origem: editandoTag ? "Cadastro editado no app" : "Cadastro manual no app",
     };
@@ -1553,6 +1878,155 @@ export default function Home() {
       setMensagem(status === "CONCLUIDO" ? "Agenda marcada como concluída." : status === "CANCELADO" ? "Agenda cancelada." : "Agenda reaberta.");
     } catch (err: any) {
       setMensagem(`Erro ao atualizar agenda: ${err.message || err}`);
+    } finally {
+      setCarregando(false);
+    }
+  }
+
+  function abrirHistoricoEquipamento(tag: string) {
+    setHistoricoTag(tag);
+    setFiltroAdmin("HISTORICO");
+    setDashboardDetalhe("");
+  }
+
+  function selecionarPlanoParaOS(plano: PlanoPreventivo) {
+    if (!plano.id) return;
+    setOsPlanoId(plano.id);
+    setOsNumero("");
+    setOsDataExecucao(hojeISO());
+    setOsExecutor(perfilUsuario?.nome || "");
+    setOsObservacao("");
+    setFiltroAdmin("OS_MANUAL");
+  }
+
+  async function atualizarBaseRecalculoPlano(plano: PlanoPreventivo, base: "EXECUCAO" | "PROGRAMADO") {
+    if (!isAdmin || !plano.id) return;
+    try {
+      setCarregando(true);
+      await supabaseRequest<PlanoPreventivo[]>(`planos_preventivos?id=eq.${plano.id}`, {
+        method: "PATCH",
+        headers: { Prefer: "return=representation" },
+        body: JSON.stringify({ base_recalculo: base, atualizado_em: new Date().toISOString() }),
+      });
+      await carregarDados();
+      setMensagem(`Regra do plano ${plano.tag} - ${plano.plano_tipo} atualizada.`);
+    } catch (err: any) {
+      setMensagem(`Erro ao alterar regra do plano: ${err.message || err}`);
+    } finally {
+      setCarregando(false);
+    }
+  }
+
+  async function registrarExecucaoPreventiva() {
+    if (!isAdmin) return setMensagem("Somente Admin pode registrar execução de preventiva.");
+    const plano = planoOsSelecionado;
+    if (!plano?.id) return setMensagem("Selecione um plano de manutenção.");
+    if (!osNumero.trim()) return setMensagem("Informe o número da OS.");
+    if (!osDataExecucao) return setMensagem("Informe a data de execução.");
+    if (!osExecutor.trim()) return setMensagem("Informe quem executou a manutenção.");
+
+    try {
+      setCarregando(true);
+
+      const abertas = programacoesPreventivas
+        .filter((p) => p.plano_id === plano.id && (p.status === "PROGRAMADO" || p.status === "ATRASADO"))
+        .sort((a, b) => a.data_programada.localeCompare(b.data_programada));
+
+      const programacaoAlvo = abertas[0];
+      let dataProgramadaBase = programacaoAlvo?.data_programada || osDataExecucao;
+
+      if (programacaoAlvo?.id) {
+        await supabaseRequest<ProgramacaoPreventiva[]>(`programacoes_preventivas?id=eq.${programacaoAlvo.id}`, {
+          method: "PATCH",
+          headers: { Prefer: "return=representation" },
+          body: JSON.stringify({
+            status: "EXECUTADO",
+            numero_os: osNumero.trim(),
+            data_execucao: osDataExecucao,
+            executor: osExecutor.trim(),
+            observacao: osObservacao.trim(),
+            atualizado_em: new Date().toISOString(),
+          }),
+        });
+      } else {
+        const sw = numeroSemanaISO(osDataExecucao);
+        await supabaseRequest<ProgramacaoPreventiva[]>("programacoes_preventivas?on_conflict=plano_id,ano,semana_iso", {
+          method: "POST",
+          headers: { Prefer: "resolution=merge-duplicates,return=representation" },
+          body: JSON.stringify({
+            plano_id: plano.id,
+            tag: plano.tag,
+            tag_normalizada: plano.tag_normalizada,
+            plano_tipo: plano.plano_tipo,
+            ano: sw.ano,
+            semana_iso: sw.semana,
+            data_programada: osDataExecucao,
+            status: "EXECUTADO",
+            numero_os: osNumero.trim(),
+            data_execucao: osDataExecucao,
+            executor: osExecutor.trim(),
+            observacao: osObservacao.trim(),
+            origem: "Registro manual no app",
+          }),
+        });
+        dataProgramadaBase = osDataExecucao;
+      }
+
+      const baseData = plano.base_recalculo === "PROGRAMADO" ? dataProgramadaBase : osDataExecucao;
+      const proxima = adicionarPeriodicidade(baseData, plano.periodicidade_valor, plano.periodicidade_unidade);
+
+      // Ao executar, o calendário futuro daquele plano é recalculado.
+      // Os registros já EXECUTADOS permanecem como histórico.
+      await supabaseRequest<null>(`programacoes_preventivas?plano_id=eq.${plano.id}&status=eq.PROGRAMADO&data_programada=gt.${encodeURIComponent(dataProgramadaBase)}`, { method: "DELETE" });
+      await supabaseRequest<null>(`programacoes_preventivas?plano_id=eq.${plano.id}&status=eq.ATRASADO&data_programada=gt.${encodeURIComponent(dataProgramadaBase)}`, { method: "DELETE" });
+
+      const limiteAno = Number(osDataExecucao.slice(0, 4)) + 1;
+      const limite = `${limiteAno}-12-31`;
+      const novos: ProgramacaoPreventiva[] = [];
+      let proximaIteracao = proxima;
+      let seguranca = 0;
+
+      while (proximaIteracao <= limite && seguranca < 80) {
+        const sw = numeroSemanaISO(proximaIteracao);
+        novos.push({
+          plano_id: plano.id,
+          tag: plano.tag,
+          tag_normalizada: plano.tag_normalizada,
+          plano_tipo: plano.plano_tipo,
+          ano: sw.ano,
+          semana_iso: sw.semana,
+          data_programada: proximaIteracao,
+          status: "PROGRAMADO",
+          origem: "Recalculado automaticamente pelo app",
+        });
+        proximaIteracao = adicionarPeriodicidade(proximaIteracao, plano.periodicidade_valor, plano.periodicidade_unidade);
+        seguranca += 1;
+      }
+
+      if (novos.length) {
+        await supabaseRequest<ProgramacaoPreventiva[]>("programacoes_preventivas?on_conflict=plano_id,ano,semana_iso", {
+          method: "POST",
+          headers: { Prefer: "resolution=ignore-duplicates,return=representation" },
+          body: JSON.stringify(novos),
+        });
+      }
+
+      await supabaseRequest<PlanoPreventivo[]>(`planos_preventivos?id=eq.${plano.id}`, {
+        method: "PATCH",
+        headers: { Prefer: "return=representation" },
+        body: JSON.stringify({
+          ultima_execucao: osDataExecucao,
+          proxima_data: proxima,
+          atualizado_em: new Date().toISOString(),
+        }),
+      });
+
+      await carregarDados();
+      setOsNumero("");
+      setOsObservacao("");
+      setMensagem(`OS ${osNumero.trim()} registrada. Próxima ${plano.plano_tipo.toLowerCase()} de ${plano.tag}: ${dataISOParaBR(proxima)}.`);
+    } catch (err: any) {
+      setMensagem(`Erro ao registrar execução preventiva: ${err.message || err}`);
     } finally {
       setCarregando(false);
     }
@@ -1830,10 +2304,12 @@ export default function Home() {
     setUsuarioAdminEditando(u.usuario);
     setUsuarioAdminNome(u.nome);
     setUsuarioAdminLogin(u.usuario);
-    setUsuarioAdminSenha(u.senha);
+    // Segurança: o ADMIN não visualiza a senha atual do usuário.
+    // Este campo fica vazio e serve apenas para redefinir a senha.
+    setUsuarioAdminSenha("");
     setUsuarioAdminPerfil(u.perfil);
     setUsuarioAdminAtivo(u.ativo !== false);
-    setMensagem("");
+    setMensagem("Senha protegida: para alterar, informe uma nova senha. Para manter a senha atual, deixe o campo em branco.");
   }
 
   async function salvarUsuarioAppAdmin() {
@@ -1844,26 +2320,43 @@ export default function Home() {
     const usuario = normalizarUsuario(usuarioAdminLogin);
     if (!usuarioAdminNome.trim()) return setMensagem("Informe o nome do usuário.");
     if (!usuario) return setMensagem("Informe um usuário válido.");
-    if (usuarioAdminSenha.length < 6) return setMensagem("A senha precisa ter pelo menos 6 caracteres.");
+
+    const usuarioExistente = usuariosApp.find((u) => u.usuario === usuario);
+    const editandoUsuario = Boolean(usuarioAdminEditando || usuarioExistente);
+
+    if (!editandoUsuario && usuarioAdminSenha.length < 6) {
+      return setMensagem("Para criar usuário novo, informe uma senha com pelo menos 6 caracteres.");
+    }
+
+    if (usuarioAdminSenha && usuarioAdminSenha.length < 6) {
+      return setMensagem("A nova senha precisa ter pelo menos 6 caracteres.");
+    }
 
     try {
       setCarregando(true);
 
+      const payloadUsuario: Partial<PerfilUsuario> = {
+        nome: usuarioAdminNome.trim(),
+        usuario,
+        perfil: usuarioAdminPerfil,
+        ativo: usuarioAdminAtivo,
+      };
+
+      // Segurança: só envia senha quando o ADMIN realmente digitou uma nova senha.
+      // Se estiver editando e deixar em branco, a senha atual é mantida no banco.
+      if (usuarioAdminSenha) {
+        payloadUsuario.senha = usuarioAdminSenha;
+      }
+
       await supabaseRequest<PerfilUsuario[]>("usuarios_app?on_conflict=usuario", {
         method: "POST",
         headers: { Prefer: "resolution=merge-duplicates,return=representation" },
-        body: JSON.stringify({
-          nome: usuarioAdminNome.trim(),
-          usuario,
-          senha: usuarioAdminSenha,
-          perfil: usuarioAdminPerfil,
-          ativo: usuarioAdminAtivo,
-        }),
+        body: JSON.stringify(payloadUsuario),
       });
 
       await carregarDados();
       limparFormularioUsuarioAdmin();
-      setMensagem(`Usuário ${usuario} salvo.`);
+      setMensagem(`Usuário ${usuario} salvo. A senha permanece protegida e não é exibida ao ADMIN.`);
     } catch (err: any) {
       setMensagem(`Erro ao salvar usuário: ${err.message || err}`);
     } finally {
@@ -2487,6 +2980,107 @@ export default function Home() {
     baixarArquivo(`checklists_detalhado_${data}.csv`, csv);
   }
 
+  function renderDashboardDetalhe() {
+    if (!dashboardDetalhe) return null;
+
+    if (dashboardDetalhe === "OK") {
+      return (
+        <section style={styles.boxInterno}>
+          <div style={styles.botoesLinha}>
+            <h3 style={{ ...styles.subtituloSecao, margin: 0 }}>Máquinas OK no período atual</h3>
+            <button onClick={() => setDashboardDetalhe("")} style={styles.botaoCinza}>Fechar</button>
+          </div>
+          <div style={styles.tabelaEquipamentos}>
+            {maquinasOkDashboard.map((e) => {
+              const chk = checklistsAtualPorTag.get(normalizarTagOS(e.tag));
+              return (
+                <div key={e.tag} style={isMobile ? styles.linhaEquipamentoMobile : styles.linhaEquipamento}>
+                  <div><strong>{e.tag}</strong><br />{e.tipo_equipamento} | {e.area || "Área não informada"}<br /><small>Último do período: {chk ? dataISOParaBR(chk.data_checklist) : "-"} | {nomePeriodicidadeChecklist(periodicidadeChecklistDoEquipamento(e))}</small></div>
+                  <button onClick={() => abrirHistoricoEquipamento(e.tag)} style={styles.botaoCinza}>Histórico</button>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      );
+    }
+
+    if (dashboardDetalhe === "AVARIAS") {
+      return (
+        <section style={styles.boxInternoDestaque}>
+          <div style={styles.botoesLinha}>
+            <h3 style={{ ...styles.subtituloSecao, margin: 0 }}>Máquinas com avaria</h3>
+            <button onClick={() => setDashboardDetalhe("")} style={styles.botaoCinza}>Fechar</button>
+          </div>
+          {maquinasAvariaDashboard.map((e) => {
+            const chk = checklistsAtualPorTag.get(normalizarTagOS(e.tag));
+            const problemas = chk?.id ? respostasBanco.filter((r) => r.checklist_id === chk.id && r.status === "NÃO OK") : [];
+            return (
+              <div key={e.tag} style={styles.alertaItem}>
+                <strong>{e.tag} - {e.tipo_equipamento}</strong><br />
+                {problemas.map((r) => <div key={`${e.tag}-${r.item_numero}`}>Item {r.item_numero}: {r.item_descricao} — <strong>{r.observacao || "Sem observação"}</strong></div>)}
+                {chk && <small>Reportado por {chk.operador_nome} em {dataISOParaBR(chk.data_checklist)}</small>}
+                <div style={styles.botoesLinha}><button onClick={() => abrirHistoricoEquipamento(e.tag)} style={styles.botaoCinza}>Ver histórico</button></div>
+              </div>
+            );
+          })}
+        </section>
+      );
+    }
+
+    if (dashboardDetalhe === "PENDENTES") {
+      return (
+        <section style={styles.boxInternoDestaque}>
+          <div style={styles.botoesLinha}>
+            <h3 style={{ ...styles.subtituloSecao, margin: 0 }}>Checklists pendentes agora</h3>
+            <button onClick={() => setDashboardDetalhe("")} style={styles.botaoCinza}>Fechar</button>
+          </div>
+          <div style={styles.pendentesGrid}>
+            {pendentesChecklistDashboard.map((e) => {
+              const ultimo = ultimoChecklistPorTag.get(normalizarTagOS(e.tag));
+              return <div key={e.tag} style={styles.pendenteItem}><strong>{e.tag}</strong><br />{e.tipo_equipamento}<br /><small>{e.area || "Área não informada"}</small><br /><span style={styles.badgeAtrasado}>{nomePeriodicidadeChecklist(periodicidadeChecklistDoEquipamento(e))} pendente</span><br /><small>Último: {ultimo ? dataISOParaBR(ultimo.data_checklist) : "Nunca realizado"}</small></div>;
+            })}
+          </div>
+        </section>
+      );
+    }
+
+    if (dashboardDetalhe === "MANUTENCAO") {
+      return (
+        <section style={styles.boxInternoDestaque}>
+          <div style={styles.botoesLinha}><h3 style={{ ...styles.subtituloSecao, margin: 0 }}>Equipamentos em manutenção</h3><button onClick={() => setDashboardDetalhe("")} style={styles.botaoCinza}>Fechar</button></div>
+          {maquinasManutencaoDashboard.map((e) => <div key={e.tag} style={styles.alertaItem}><strong>{e.tag}</strong> — {e.tipo_equipamento}<br />{e.area || "Área não informada"}<div style={styles.botoesLinha}><button onClick={() => abrirHistoricoEquipamento(e.tag)} style={styles.botaoCinza}>Histórico</button></div></div>)}
+        </section>
+      );
+    }
+
+    if (dashboardDetalhe === "PREVENTIVAS") {
+      const lista = [...preventivasAtrasadasDashboard, ...preventivasProximasDashboard.filter((p) => !preventivasAtrasadasDashboard.some((a) => a.id === p.id))];
+      return (
+        <section style={styles.boxInternoDestaque}>
+          <div style={styles.botoesLinha}><h3 style={{ ...styles.subtituloSecao, margin: 0 }}>Preventivas que exigem atenção</h3><button onClick={() => setDashboardDetalhe("")} style={styles.botaoCinza}>Fechar</button></div>
+          {lista.map((p) => {
+            const plano = planosPreventivos.find((x) => x.id === p.plano_id);
+            const atrasada = p.status === "ATRASADO" || p.data_programada < hojeDashboard;
+            return <div key={p.id} style={styles.alertaItem}><strong>{p.tag} — {p.plano_tipo}</strong><br />Programada: {dataISOParaBR(p.data_programada)} | <span style={atrasada ? styles.badgeAtrasado : styles.badgeAguardando}>{atrasada ? "ATRASADA" : "PRÓXIMA"}</span>{plano && <div style={styles.botoesLinha}><button onClick={() => selecionarPlanoParaOS(plano)} style={styles.botaoPreto}>Registrar execução / OS</button></div>}</div>;
+          })}
+        </section>
+      );
+    }
+
+    if (dashboardDetalhe === "NA") {
+      return (
+        <section style={styles.boxInterno}>
+          <div style={styles.botoesLinha}><h3 style={{ ...styles.subtituloSecao, margin: 0 }}>N/A aguardando validação</h3><button onClick={() => setDashboardDetalhe("")} style={styles.botaoCinza}>Fechar</button></div>
+          {sugestoesNAPendentes.map((s: any) => <div key={s.key} style={styles.naCard}><strong>{s.modeloLabel}</strong><br />Item {s.itemNumero}: {s.itemDescricao}<br />Ocorrências: {s.totalOcorrencias}</div>)}
+          <div style={styles.botoesLinha}><button onClick={() => { setFiltroAdmin("NA_VALIDACAO"); setDashboardDetalhe(""); }} style={styles.botaoPreto}>Abrir validação N/A</button></div>
+        </section>
+      );
+    }
+
+    return null;
+  }
+
   if (!perfilUsuario) {
     return (
       <main style={{ ...styles.main, display: "grid", placeItems: "center" }}>
@@ -2558,7 +3152,7 @@ export default function Home() {
             <img src="/logo.png" alt="Logo Baterias Pioneiro" style={styles.logo} onError={(e) => { e.currentTarget.style.display = "none"; }} />
             <div>
               <div style={styles.empresaNome}>Baterias Pioneiro</div>
-              <h1 style={styles.titulo}>Checklist Diário de Empilhadeiras e Paleteiras</h1>
+              <h1 style={styles.titulo}>Checklist e Gestão da Frota Interna</h1>
               <p style={styles.subtitulo}>Usuário: {perfilUsuario.usuario} | Perfil: {perfil}</p>
             </div>
           </div>
@@ -2571,49 +3165,43 @@ export default function Home() {
         {carregando && <div style={styles.aviso}>Carregando/salvando dados...</div>}
         {mensagem && <div style={mensagem.includes("Erro") ? styles.avisoErro : styles.aviso}>{mensagem}</div>}
 
-        <section style={isMobile ? styles.kpiGridMobile : styles.kpiGrid}>
-          <Card titulo="Obrigatórios" valor={equipamentosObrigatorios.length} />
-          <Card titulo={`Concluídos ${nomeTurno(turnoSelecionado)}`} valor={concluidosHoje} />
-          <Card titulo={`Pendentes ${nomeTurno(turnoSelecionado)}`} valor={pendentesHoje.length} />
-          <Card titulo="Com avaria" valor={comAvariaHoje.length} destaque={comAvariaHoje.length > 0} />
-        </section>
+        {perfil === "OPERADOR" && (
+          <>
+            <section style={isMobile ? styles.kpiGridMobile : styles.kpiGrid}>
+              <Card titulo="Obrigatórios" valor={equipamentosObrigatorios.length} />
+              <Card titulo="Concluídos no período" valor={concluidosHoje} />
+              <Card titulo="Pendentes no período" valor={pendentesHoje.length} />
+              <Card titulo="Com avaria" valor={comAvariaHoje.length} destaque={comAvariaHoje.length > 0} />
+            </section>
 
-        <section style={styles.box}>
-          <h2 style={styles.boxTitulo}>Filtros</h2>
-          <div style={isMobile ? styles.gridMobile : styles.grid4}>
-            <Campo label="Nome completo">
-              <input value={operador} onChange={(e) => setOperador(e.target.value)} placeholder="Nome completo" style={styles.input} />
-            </Campo>
-            <Campo label="Módulo">
-              <select value={moduloSelecionado} onChange={(e) => setModuloSelecionado(e.target.value as ModuloEquipamento)} style={styles.input}>
-                <option value="FROTA">Frota</option>
-                <option value="MONOVIA">Monovia / Talha</option>
-                <option value="TODOS">Todos</option>
-              </select>
-            </Campo>
-            <Campo label="Data">
-              <input type="date" value={data} onChange={(e) => setData(e.target.value)} style={styles.input} />
-            </Campo>
-            <Campo label={moduloSelecionado === "MONOVIA" ? "Periodicidade" : "Turno"}>
-              {moduloSelecionado === "MONOVIA" ? (
-                <input value="Inspeção mensal" readOnly style={styles.input} />
-              ) : (
-                <select value={turnoSelecionado} onChange={(e) => setTurnoSelecionado(e.target.value as TurnoCodigo)} style={styles.input}>
-                  <option value="T1">Turno 1 - 06h</option>
-                  <option value="T2">Turno 2 - 18h</option>
-                </select>
-              )}
-            </Campo>
-            <Campo label="Área">
-              <select value={area} onChange={(e) => setArea(e.target.value)} style={styles.input}>
-                {areas.map((a) => <option key={a}>{a}</option>)}
-              </select>
-            </Campo>
-            <Campo label="Buscar">
-              <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="TAG, modelo, local..." style={styles.input} />
-            </Campo>
-          </div>
-        </section>
+            <section style={styles.box}>
+              <h2 style={styles.boxTitulo}>Filtros</h2>
+              <div style={isMobile ? styles.gridMobile : styles.grid4}>
+                <Campo label="Nome completo">
+                  <input value={operador} onChange={(e) => setOperador(e.target.value)} placeholder="Nome completo" style={styles.input} />
+                </Campo>
+                <Campo label="Módulo">
+                  <select value={moduloSelecionado} onChange={(e) => setModuloSelecionado(e.target.value as ModuloEquipamento)} style={styles.input}>
+                    <option value="FROTA">Frota</option>
+                    <option value="MONOVIA">Monovia / Talha</option>
+                    <option value="TODOS">Todos</option>
+                  </select>
+                </Campo>
+                <Campo label="Data de referência">
+                  <input type="date" value={data} onChange={(e) => setData(e.target.value)} style={styles.input} />
+                </Campo>
+                <Campo label="Área">
+                  <select value={area} onChange={(e) => setArea(e.target.value)} style={styles.input}>
+                    {areas.map((a) => <option key={a}>{a}</option>)}
+                  </select>
+                </Campo>
+                <Campo label="Buscar">
+                  <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="TAG, modelo, local..." style={styles.input} />
+                </Campo>
+              </div>
+            </section>
+          </>
+        )}
 
         {perfil === "OPERADOR" && telaOperador === "LISTA" && (
           <section style={styles.box}>
@@ -2631,8 +3219,9 @@ export default function Home() {
                     {e.status_operacional === "EM_MANUTENCAO" && <span style={styles.badgeAtrasado}>Em manutenção</span>}
                     {tagsComAlertaCmms.has(normalizarTagOS(e.tag)) && <span style={styles.badgeAtrasado}>Manutenção pendente</span>}
                     {tagsComAgendaManutencao.has(normalizarTagOS(e.tag)) && <span style={styles.badgeAguardando}>Manutenção programada</span>}
+                    <span style={styles.badgeAguardando}>{nomePeriodicidadeChecklist(periodicidadeChecklistDoEquipamento(e))}</span>
                     {e.checklist_obrigatorio === false && <span style={styles.badgeOpcional}>Não obrigatório</span>}
-                    {feito && <span style={styles.badgeConcluido}>Feito neste turno</span>}
+                    {feito && <span style={styles.badgeConcluido}>Feito no período</span>}
                   </button>
                 );
               })}
@@ -2647,7 +3236,7 @@ export default function Home() {
               <div>
                 <h2 style={{ margin: 0 }}>Checklist - {equipamentoSelecionado.tag}</h2>
                 <p style={{ marginTop: 6, color: "#475569" }}>
-                  {nomeTurno(turnoSelecionado)} | Fotos no Storage e dados no banco.
+                  {descricaoPeriodoChecklist(equipamentoSelecionado, data)} | Fotos no Storage e dados no banco.
                 </p>
               </div>
             </div>
@@ -2817,558 +3406,418 @@ export default function Home() {
         {isAdmin && (
           <>
             <section style={styles.box}>
-              <h2 style={styles.boxTitulo}>Painel Admin</h2>
-              <div style={styles.botoesLinha}>
-                <button onClick={exportarResumoCSV} style={styles.botaoPreto}>Exportar resumo CSV</button>
-                <button onClick={exportarDetalhadoCSV} style={styles.botaoCinza}>Exportar detalhado CSV</button>
+              <div style={isMobile ? styles.headerAdminMobile : styles.headerAdminLinha}>
+                <div>
+                  <div style={styles.empresaNome}>Área exclusiva ADMIN</div>
+                  <h2 style={{ ...styles.boxTitulo, marginBottom: 4 }}>Gestão da Frota Interna</h2>
+                  <p style={styles.textoApoio}>Dashboard, checklists, plano mestre, mapa de 52 semanas e histórico em páginas separadas.</p>
+                </div>
+                <div style={styles.botoesLinha}>
+                  <button onClick={exportarResumoCSV} style={styles.botaoPreto}>Exportar resumo CSV</button>
+                  <button onClick={exportarDetalhadoCSV} style={styles.botaoCinza}>Exportar detalhado CSV</button>
+                </div>
               </div>
-              <div style={styles.filtroLinha}>
-                {(["TODOS", "AVARIAS", "PENDENTES", "CONCLUIDOS", "RELATORIOS", "CMMS", "AGENDA"] as const).map((f) => (
-                  <button key={f} onClick={() => setFiltroAdmin(f)} style={filtroAdmin === f ? styles.filtroAtivo : styles.filtroBotao}>{f}</button>
+
+              <div style={styles.adminMenuGrid}>
+                {([
+                  ["DASHBOARD", "Dashboard"],
+                  ["HOJE", "Feito hoje"],
+                  ["PLANO_MESTRE", "Plano Mestre"],
+                  ["MAPA_52", "Mapa 52 Semanas"],
+                  ["OS_MANUAL", "OS / Execuções"],
+                  ["EQUIPAMENTOS", "Equipamentos"],
+                  ["HISTORICO", "Histórico"],
+                  ["NA_VALIDACAO", "N/A - Validação"],
+                  ["CHECKLIST", "Itens checklist"],
+                  ["RETIRAR_MODELO", "Retirar por modelo"],
+                  ["USUARIOS", "Usuários"],
+                  ["PARADAS", "Paradas / Reserva"],
+                  ["RELATORIOS", "Relatórios"],
+                  ["CMMS", "CMMS"],
+                ] as const).map(([id, label]) => (
+                  <button key={id} onClick={() => { setFiltroAdmin(id); setDashboardDetalhe(""); }} style={filtroAdmin === id ? styles.adminMenuAtivo : styles.adminMenuBotao}>{label}</button>
                 ))}
               </div>
             </section>
 
-            {filtroAdmin === "AGENDA" && (
-              <section style={styles.box}>
-                <h2 style={styles.boxTitulo}>Calendário de manutenção</h2>
-                <p style={styles.textoApoio}>
-                  Área exclusiva do ADMIN. Cadastre preventivas ou programações para que o operador veja o aviso ao selecionar o equipamento.
-                </p>
-
-                <div style={isMobile ? styles.gridMobile : styles.grid4}>
-                  <Card titulo="Programadas" valor={agendaManutencaoAtivaLista.length} />
-                  <Card titulo="Atrasadas" valor={agendaAtrasada.length} destaque={agendaAtrasada.length > 0} />
-                  <Card titulo="Hoje" valor={agendaHoje.length} destaque={agendaHoje.length > 0} />
-                  <Card titulo="Módulo selecionado" valor={agendaEquipamentosDisponiveis.length} />
-                </div>
-
-                <section style={styles.boxInternoDestaque}>
-                  <h3 style={styles.subtituloSecao}>Nova programação</h3>
-                  <div style={isMobile ? styles.gridMobile : styles.grid4}>
-                    <Campo label="Módulo">
-                      <select value={agendaModulo} onChange={(e) => { setAgendaModulo(e.target.value as ModuloEquipamento); setAgendaTag(""); }} style={styles.input}>
-                        <option value="FROTA">Frota</option>
-                        <option value="MONOVIA">Monovia / Talha</option>
-                        <option value="TODOS">Todos</option>
-                      </select>
-                    </Campo>
-                    <Campo label="Equipamento">
-                      <select value={agendaTag} onChange={(e) => setAgendaTag(e.target.value)} style={styles.input}>
-                        <option value="">Selecione</option>
-                        {agendaEquipamentosDisponiveis.map((e) => (
-                          <option key={e.tag} value={e.tag}>{e.tag} - {e.tipo_equipamento}</option>
-                        ))}
-                      </select>
-                    </Campo>
-                    <Campo label="Data programada">
-                      <input type="date" value={agendaDataProgramada} onChange={(e) => setAgendaDataProgramada(e.target.value)} style={styles.input} />
-                    </Campo>
-                    <Campo label="Tipo">
-                      <select value={agendaTipo} onChange={(e) => setAgendaTipo(e.target.value)} style={styles.input}>
-                        <option>Preventiva</option>
-                        <option>Inspeção</option>
-                        <option>Corretiva programada</option>
-                        <option>Troca programada</option>
-                      </select>
-                    </Campo>
+            {filtroAdmin === "DASHBOARD" && (
+              <>
+                <section style={styles.box}>
+                  <div style={styles.dashboardTituloLinha}>
+                    <div>
+                      <h2 style={styles.boxTitulo}>Visão geral</h2>
+                      <p style={styles.textoApoio}>Situação atual calculada automaticamente a partir dos checklists, avarias e plano de manutenção.</p>
+                    </div>
+                    <button onClick={() => carregarDados()} style={styles.botaoCinza}>Atualizar agora</button>
                   </div>
-                  <Campo label="Observação / serviço previsto">
-                    <textarea value={agendaDescricao} onChange={(e) => setAgendaDescricao(e.target.value)} style={styles.textarea} placeholder="Ex.: Preventiva geral, lubrificação, inspeção de segurança, revisão de freio..." />
-                  </Campo>
-                  <div style={styles.botoesLinha}>
-                    <button onClick={salvarAgendaManutencao} style={styles.botaoVerde}>Salvar programação</button>
+
+                  <div style={isMobile ? styles.dashboardKpiGridMobile : styles.dashboardKpiGrid}>
+                    <DashboardCard titulo="Máquinas OK" valor={maquinasOkDashboard.length} subtitulo="Checklist do período conforme" cor="VERDE" onClick={() => setDashboardDetalhe("OK")} />
+                    <DashboardCard titulo="Com avaria" valor={maquinasAvariaDashboard.length} subtitulo="Último checklist do período" cor="AMARELO" onClick={() => setDashboardDetalhe("AVARIAS")} />
+                    <DashboardCard titulo="Em manutenção" valor={maquinasManutencaoDashboard.length} subtitulo="Paradas / indisponíveis" cor="VERMELHO" onClick={() => setDashboardDetalhe("MANUTENCAO")} />
+                    <DashboardCard titulo="Checklist pendente" valor={pendentesChecklistDashboard.length} subtitulo="Exato pela periodicidade de cada TAG" cor={pendentesChecklistDashboard.length ? "VERMELHO" : "VERDE"} onClick={() => setDashboardDetalhe("PENDENTES")} />
+                    <DashboardCard titulo="Preventivas atrasadas" valor={preventivasAtrasadasDashboard.length} subtitulo="Mapa / plano mestre" cor={preventivasAtrasadasDashboard.length ? "VERMELHO" : "VERDE"} onClick={() => setDashboardDetalhe("PREVENTIVAS")} />
+                    <DashboardCard titulo="Próximos 7 dias" valor={preventivasProximasDashboard.length} subtitulo="Manutenções programadas" cor="AZUL" onClick={() => setDashboardDetalhe("PREVENTIVAS")} />
+                    <DashboardCard titulo="N/A para validar" valor={sugestoesNAPendentes.length} subtitulo="Aguardando decisão do ADMIN" cor={sugestoesNAPendentes.length ? "AMARELO" : "VERDE"} onClick={() => setDashboardDetalhe("NA")} />
+                    <DashboardCard titulo="Preventivas hoje" valor={preventivasExecutadasHoje.length} subtitulo="Execuções registradas" cor="PRETO" onClick={() => setFiltroAdmin("OS_MANUAL")} />
                   </div>
+
+                  {renderDashboardDetalhe()}
                 </section>
 
-                <section style={styles.boxInterno}>
-                  <h3 style={styles.subtituloSecao}>Programações ativas</h3>
-                  {agendaManutencaoAtivaLista.length === 0 && <p>Nenhuma programação ativa.</p>}
-                  <div style={styles.tabelaEquipamentos}>
-                    {agendaManutencaoAtivaLista.slice(0, 120).map((ag) => {
-                      const alerta = classificarAlertaAgenda(ag);
-                      return (
-                        <div key={ag.id || `${ag.tag}-${ag.data_programada}`} style={isMobile ? styles.linhaEquipamentoMobile : styles.linhaEquipamento}>
-                          <div>
-                            <strong>{ag.tag} - {ag.tipo_manutencao}</strong><br />
-                            Módulo: {nomeModulo(ag.modulo as ModuloEquipamento)} | Data: {dataISOParaBR(ag.data_programada)} | Status: {ag.status}<br />
-                            {ag.descricao || "Sem observação"}
-                          </div>
-                          <div>
-                            <span style={alerta.nivel === "CRITICO" ? styles.badgeAtrasado : styles.badgeAguardando}>{alerta.titulo}</span>
-                            <div style={styles.botoesLinha}>
-                              <button onClick={() => atualizarStatusAgenda(ag.id, "CONCLUIDO")} style={styles.botaoVerde}>Concluir</button>
-                              <button onClick={() => atualizarStatusAgenda(ag.id, "CANCELADO")} style={styles.botaoPerigo}>Cancelar</button>
-                            </div>
-                          </div>
+                <div style={isMobile ? styles.gridMobile : styles.dashboardDuasColunas}>
+                  <section style={styles.box}>
+                    <h2 style={styles.boxTitulo}>Atenção agora</h2>
+                    <p style={styles.textoApoio}>Problemas que continuam abertos no último registro do mesmo item.</p>
+                    {defeitosAbertosDashboard.length === 0 && <div style={styles.estadoVazio}>Nenhum defeito persistente identificado.</div>}
+                    {defeitosAbertosDashboard.slice(0, 8).map((d) => (
+                      <div key={`${d.tag}-${d.itemNumero}`} style={d.dias >= 7 ? styles.problemaPersistente : styles.alertaItem}>
+                        <div style={styles.problemaCabecalho}>
+                          <strong>{d.tag} — Item {d.itemNumero}</strong>
+                          <span style={d.dias >= 14 ? styles.badgeAtrasado : styles.badgeAguardando}>{textoTempoAberto(d.dias)}</span>
                         </div>
-                      );
-                    })}
-                  </div>
-                </section>
-              </section>
-            )}
-
-            {filtroAdmin === "CMMS" && (
-              <section style={styles.box}>
-                <h2 style={styles.boxTitulo}>Importar OS do CMMS</h2>
-                <p style={styles.textoApoio}>
-                  Área exclusiva do ADMIN. Importe o relatório Extrato de Manutenções Amplo em .xls. O app vincula as OS pela TAG do equipamento.
-                </p>
-
-                <div style={isMobile ? styles.gridMobile : styles.grid4}>
-                  <Card titulo="OS importadas" valor={osCmms.length} />
-                  <Card titulo="OS abertas" valor={osCmmsAbertas.length} />
-                  <Card titulo="Sem vínculo ativo" valor={osCmmsSemVinculo.length} />
-                  <Card titulo="Alertas na frota" valor={tagsComAlertaCmms.size} />
-                </div>
-
-                <Campo label="Selecionar arquivo exportado do CMMS">
-                  <input type="file" accept=".xls,.html,.htm" onChange={importarArquivoCMMS} style={styles.input} />
-                </Campo>
-
-                {resultadoImportacaoCMMS && (
-                  <div style={styles.alertaItem}>
-                    <strong>Última importação: {resultadoImportacaoCMMS.arquivo}</strong><br />
-                    Linhas lidas: {resultadoImportacaoCMMS.total}<br />
-                    OS importadas/atualizadas: {resultadoImportacaoCMMS.importadas}<br />
-                    Vinculadas ao cadastro atual: {resultadoImportacaoCMMS.vinculadas}<br />
-                    Sem vínculo ativo: {resultadoImportacaoCMMS.semVinculo}
-                  </div>
-                )}
-
-                <section style={styles.boxInterno}>
-                  <h3 style={styles.subtituloSecao}>OS abertas / pendentes importadas</h3>
-                  {osCmmsAbertas.length === 0 && <p>Nenhuma OS aberta importada.</p>}
-                  <div style={styles.tabelaEquipamentos}>
-                    {osCmmsAbertas.slice(0, 60).map((os) => {
-                      const alerta = classificarAlertaCmms(os);
-                      return (
-                        <div key={`${os.num_os}-${os.tag}`} style={isMobile ? styles.linhaEquipamentoMobile : styles.linhaEquipamento}>
-                          <div>
-                            <strong>{os.tag} - OS {os.num_os}</strong><br />
-                            {alerta.titulo} | {os.tipo_manut || "Tipo não informado"} | Status: {os.status || "Não informado"}<br />
-                            Data programada: {os.dt_progr || "Não informada"}<br />
-                            Descrição: {os.descricao || os.desc_codigo_parada || "Sem descrição"}
-                          </div>
-                          <span style={alerta.nivel === "CRITICO" ? styles.badgeAtrasado : styles.badgeAguardando}>{alerta.titulo}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </section>
-
-                <section style={styles.boxInterno}>
-                  <h3 style={styles.subtituloSecao}>OS sem vínculo com equipamento ativo</h3>
-                  <p style={styles.textoApoio}>Isso é esperado quando importar histórico antigo ou equipamentos que não existem mais no app.</p>
-                  {osCmmsSemVinculo.length === 0 && <p>Nenhuma OS sem vínculo.</p>}
-                  <div style={styles.tabelaEquipamentos}>
-                    {osCmmsSemVinculo.slice(0, 40).map((os) => (
-                      <div key={`${os.num_os}-${os.tag}`} style={isMobile ? styles.linhaEquipamentoMobile : styles.linhaEquipamento}>
-                        <div>
-                          <strong>{os.tag} - OS {os.num_os}</strong><br />
-                          Equipamento CMMS: {os.equipamento_texto}<br />
-                          Tipo: {os.tipo_manut || "Não informado"} | Status: {os.status || "Não informado"}<br />
-                          Descrição: {os.descricao || os.desc_codigo_parada || "Sem descrição"}
-                        </div>
+                        <div>{d.itemDescricao}</div>
+                        <div style={{ marginTop: 5 }}><strong>Observação:</strong> {d.observacao}</div>
+                        <small>{d.operador} reportou novamente em {dataISOParaBR(d.ultimo)}</small>
+                        <div style={styles.botoesLinha}><button onClick={() => abrirHistoricoEquipamento(d.tag)} style={styles.botaoCinza}>Histórico do equipamento</button></div>
                       </div>
                     ))}
-                  </div>
-                </section>
+                  </section>
+
+                  <section style={styles.box}>
+                    <h2 style={styles.boxTitulo}>Feito hoje</h2>
+                    <p style={styles.textoApoio}>Resumo simples dos checklists registrados em {dataISOParaBR(hojeDashboard)}.</p>
+                    <div style={styles.numeroDestaque}>{checklistsFeitosHojeDashboard.length}</div>
+                    {checklistsFeitosHojeDashboard.length === 0 && <div style={styles.estadoVazio}>Nenhum checklist registrado hoje.</div>}
+                    {checklistsFeitosHojeDashboard.slice(0, 10).map((c) => (
+                      <button key={c.id || `${c.tag}-${c.hora_checklist}`} onClick={() => abrirHistoricoEquipamento(c.tag)} style={styles.linhaHojeBotao}>
+                        <div><strong>{c.tag}</strong><br /><small>{c.operador_nome} | {c.hora_checklist || "Sem horário"}</small></div>
+                        <span style={c.resultado_final === "CONFORME" ? styles.badgeConcluido : styles.badgeAtrasado}>{c.resultado_final}</span>
+                      </button>
+                    ))}
+                    {checklistsFeitosHojeDashboard.length > 10 && <button onClick={() => setFiltroAdmin("HOJE")} style={styles.botaoCinza}>Ver todos de hoje</button>}
+                  </section>
+                </div>
+
+                <div style={isMobile ? styles.gridMobile : styles.dashboardTresColunas}>
+                  <section style={styles.box}>
+                    <h3 style={styles.subtituloSecao}>Situação do período</h3>
+                    <BarraDashboard label="OK" valor={maquinasOkDashboard.length} total={Math.max(1, equipamentosObrigatoriosDashboard.length)} tipo="VERDE" />
+                    <BarraDashboard label="Avaria" valor={maquinasAvariaDashboard.length} total={Math.max(1, equipamentosObrigatoriosDashboard.length)} tipo="AMARELO" />
+                    <BarraDashboard label="Pendente" valor={pendentesChecklistDashboard.length} total={Math.max(1, equipamentosObrigatoriosDashboard.length)} tipo="VERMELHO" />
+                    <BarraDashboard label="Manutenção" valor={maquinasManutencaoDashboard.length} total={Math.max(1, equipamentosAtivosDashboard.length)} tipo="PRETO" />
+                  </section>
+
+                  <section style={styles.box}>
+                    <h3 style={styles.subtituloSecao}>Checklists - últimos 7 dias</h3>
+                    <div style={styles.miniGraficoColunas}>
+                      {checklistsUltimos7Dias.map((d) => {
+                        const max = Math.max(1, ...checklistsUltimos7Dias.map((x) => x.total));
+                        return <div key={d.data} style={styles.miniGraficoItem}><div style={styles.miniGraficoValor}>{d.total}</div><div style={{ ...styles.miniGraficoBarra, height: `${Math.max(5, (d.total / max) * 90)}px` }} /><small>{d.data.slice(8, 10)}/{d.data.slice(5, 7)}</small></div>;
+                      })}
+                    </div>
+                  </section>
+
+                  <section style={styles.box}>
+                    <h3 style={styles.subtituloSecao}>Carga preventiva - 8 semanas</h3>
+                    <div style={styles.miniGraficoColunas}>
+                      {cargaPreventiva8Semanas.map((w) => {
+                        const max = Math.max(1, ...cargaPreventiva8Semanas.map((x) => x.total));
+                        return <div key={`${w.ano}-${w.semana}`} style={styles.miniGraficoItem}><div style={styles.miniGraficoValor}>{w.total}</div><div style={{ ...styles.miniGraficoBarraAmarela, height: `${Math.max(5, (w.total / max) * 90)}px` }} /><small>{w.label}</small></div>;
+                      })}
+                    </div>
+                  </section>
+                </div>
+              </>
+            )}
+
+            {filtroAdmin === "HOJE" && (
+              <section style={styles.box}>
+                <h2 style={styles.boxTitulo}>Checklists realizados hoje</h2>
+                <div style={isMobile ? styles.kpiGridMobile : styles.kpiGrid}>
+                  <Card titulo="Realizados" valor={checklistsFeitosHojeDashboard.length} />
+                  <Card titulo="Conformes" valor={checklistsFeitosHojeDashboard.filter((c) => c.resultado_final === "CONFORME").length} />
+                  <Card titulo="Com avaria" valor={checklistsFeitosHojeDashboard.filter((c) => c.resultado_final === "COM AVARIA").length} destaque />
+                  <Card titulo="Pendentes agora" valor={pendentesChecklistDashboard.length} destaque={pendentesChecklistDashboard.length > 0} />
+                </div>
+                <div style={styles.tabelaEquipamentos}>
+                  {checklistsFeitosHojeDashboard.map((c) => (
+                    <div key={c.id || `${c.tag}-${c.hora_checklist}`} style={isMobile ? styles.linhaEquipamentoMobile : styles.linhaEquipamento}>
+                      <div><strong>{c.tag}</strong><br />{c.tipo_equipamento} | {c.area}<br /><small>{c.operador_nome} | {c.hora_checklist || "Sem horário"} | {c.turno_nome || "Checklist"}</small></div>
+                      <div style={styles.botoesLinha}><span style={c.resultado_final === "CONFORME" ? styles.badgeConcluido : styles.badgeAtrasado}>{c.resultado_final}</span><button onClick={() => abrirHistoricoEquipamento(c.tag)} style={styles.botaoCinza}>Histórico</button></div>
+                    </div>
+                  ))}
+                </div>
               </section>
             )}
 
-            {filtroAdmin === "RELATORIOS" && (
+            {filtroAdmin === "PLANO_MESTRE" && (
               <section style={styles.box}>
-                <h2 style={styles.boxTitulo}>Relatório de Checklist de Equipamentos</h2>
-                <p style={styles.textoApoio}>
-                  Relatório exclusivo do perfil ADMIN. Selecione o período e os equipamentos para gerar um único relatório com os checklists registrados.
-                </p>
-
+                <h2 style={styles.boxTitulo}>Plano Mestre de Manutenção</h2>
+                <p style={styles.textoApoio}>Carregado a partir do Plano de Preventivas da Frota Interna. Cada TAG possui seus níveis de manutenção e as atividades correspondentes.</p>
                 <div style={isMobile ? styles.gridMobile : styles.grid4}>
-                  <Campo label="Data inicial">
-                    <input type="date" value={relatorioDataInicio} onChange={(e) => setRelatorioDataInicio(e.target.value)} style={styles.input} />
-                  </Campo>
-                  <Campo label="Data final">
-                    <input type="date" value={relatorioDataFim} onChange={(e) => setRelatorioDataFim(e.target.value)} style={styles.input} />
-                  </Campo>
-                  <Campo label="Turno">
-                    <select value={relatorioTurno} onChange={(e) => setRelatorioTurno(e.target.value as "TODOS" | TurnoCodigo)} style={styles.input}>
-                      <option value="TODOS">Todos</option>
-                      <option value="T1">Turno 1 - 06h</option>
-                      <option value="T2">Turno 2 - 18h</option>
-                    </select>
-                  </Campo>
-                  <Campo label="Fotos">
-                    <select value={relatorioIncluirFotos ? "SIM" : "NAO"} onChange={(e) => setRelatorioIncluirFotos(e.target.value === "SIM")} style={styles.input}>
-                      <option value="NAO">Período: mostrar somente links</option>
-                      <option value="SIM">Período: incluir fotos no PDF</option>
-                    </select>
-                    <small style={styles.textoApoio}>Se for somente um dia, as fotos entram automaticamente.</small>
-                  </Campo>
+                  <Card titulo="Planos ativos" valor={planosPreventivos.length} />
+                  <Card titulo="Com vínculo no cadastro" valor={planosPreventivos.filter((p) => p.equipamento_id).length} />
+                  <Card titulo="Sem vínculo" valor={planosPreventivos.filter((p) => !p.equipamento_id).length} destaque={planosPreventivos.some((p) => !p.equipamento_id)} />
+                  <Card titulo="Atividades cadastradas" valor={itensPlanoPreventivo.filter((i) => i.plano_tipo !== "MATERIAL").length} />
                 </div>
-
-                <Campo label="Buscar equipamento">
-                  <input value={relatorioBuscaEquipamento} onChange={(e) => setRelatorioBuscaEquipamento(e.target.value)} placeholder="Ex.: PLE 12, PLE 80, PLE 100, área, modelo..." style={styles.input} />
-                </Campo>
-
-                <div style={styles.botoesLinha}>
-                  <button onClick={selecionarTodosEquipamentosRelatorio} style={styles.botaoCinza}>Selecionar lista filtrada</button>
-                  <button onClick={limparSelecaoRelatorio} style={styles.botaoCinza}>Limpar seleção</button>
-                  <button onClick={gerarRelatorioChecklistPDF} style={styles.botaoPreto}>Gerar relatório PDF</button>
+                <div style={isMobile ? styles.gridMobile : styles.grid2}>
+                  <Campo label="Buscar TAG / modelo / plano"><input value={planoBusca} onChange={(e) => setPlanoBusca(e.target.value)} placeholder="Ex.: ERR4, ES15W, mensal..." style={styles.input} /></Campo>
+                  <Campo label="Tipo de plano"><select value={planoTipoFiltro} onChange={(e) => setPlanoTipoFiltro(e.target.value)} style={styles.input}><option value="TODOS">Todos</option><option value="QUINZENAL">Quinzenal</option><option value="MENSAL">Mensal</option><option value="TRIMESTRAL">Trimestral</option><option value="SEMESTRAL">Semestral</option></select></Campo>
                 </div>
-
-                <p style={styles.textoApoio}>Selecionados: {relatorioTagsSelecionadas.length ? relatorioTagsSelecionadas.join(", ") : "nenhum equipamento selecionado"}</p>
-
-                <div style={isMobile ? styles.listaEquipamentosMobile : styles.listaEquipamentos}>
-                  {equipamentosRelatorioFiltrados.map((e) => {
-                    const selecionado = relatorioTagsSelecionadas.includes(e.tag);
+                <div style={styles.tabelaEquipamentos}>
+                  {planosFiltradosAdmin.slice(0, 400).map((plano) => {
+                    const abertas = programacoesPreventivas.filter((p) => p.plano_id === plano.id && (p.status === "PROGRAMADO" || p.status === "ATRASADO")).sort((a, b) => a.data_programada.localeCompare(b.data_programada));
+                    const prox = abertas[0];
+                    const expandido = planoExpandidoId === plano.id;
+                    const operacoes = itensPlanoPreventivo.filter((i) => i.modelo_plano === plano.modelo_plano && i.checklist === plano.checklist_referencia);
+                    const materiais = itensPlanoPreventivo.filter((i) => i.modelo_plano === plano.modelo_plano && i.plano_tipo === "MATERIAL");
                     return (
-                      <button key={e.tag} onClick={() => alternarEquipamentoRelatorio(e.tag)} style={{ ...styles.cardSelecao, border: selecionado ? "2px solid #111111" : "1px solid #e2e8f0", background: selecionado ? "#fef9c3" : "white" }}>
-                        <strong style={styles.tagMini}>{e.tag}</strong>
-                        <span>{e.tipo_equipamento}</span>
-                        <small>{e.modelo || "Modelo não informado"} | {e.area || "Área não informada"}</small>
-                        <strong>{selecionado ? "Selecionado" : "Selecionar"}</strong>
-                      </button>
+                      <div key={plano.id || `${plano.tag}-${plano.plano_tipo}`} style={styles.planoCard}>
+                        <div style={styles.planoCabecalho}>
+                          <div>
+                            <strong style={styles.tagMini}>{plano.tag}</strong> <span style={styles.badgeAguardando}>{plano.plano_tipo}</span><br />
+                            <strong>{plano.modelo_plano}</strong><br />
+                            <small>{plano.checklist_referencia || "Plano sem referência"}</small><br />
+                            <small>Última execução: {plano.ultima_execucao ? dataISOParaBR(plano.ultima_execucao) : "Não registrada"} | Próxima: {prox ? dataISOParaBR(prox.data_programada) : plano.proxima_data ? dataISOParaBR(plano.proxima_data) : "Sem programação"}</small><br />
+                            {!plano.equipamento_id && <span style={styles.badgeAtrasado}>Sem vínculo com cadastro de equipamentos</span>}
+                          </div>
+                          <div style={styles.botoesLinha}>
+                            <button onClick={() => setPlanoExpandidoId(expandido ? "" : (plano.id || ""))} style={styles.botaoCinza}>{expandido ? "Ocultar atividades" : `Ver atividades (${operacoes.length})`}</button>
+                            <button onClick={() => selecionarPlanoParaOS(plano)} style={styles.botaoPreto}>Registrar OS / execução</button>
+                          </div>
+                        </div>
+                        <div style={styles.regraRecalculoLinha}>
+                          <small>Próxima manutenção calculada a partir de:</small>
+                          <select value={plano.base_recalculo} onChange={(e) => atualizarBaseRecalculoPlano(plano, e.target.value as "EXECUCAO" | "PROGRAMADO")} style={styles.inputCompacto}>
+                            <option value="EXECUCAO">Data realmente executada</option>
+                            <option value="PROGRAMADO">Data originalmente programada</option>
+                          </select>
+                        </div>
+                        {expandido && (
+                          <div style={styles.planoDetalhes}>
+                            <h4>Atividades da manutenção</h4>
+                            <div style={{ overflowX: "auto" }}><table style={styles.tabela}><thead><tr><th style={styles.th}>Sistema</th><th style={styles.th}>Operação</th><th style={styles.th}>Troca</th></tr></thead><tbody>{operacoes.map((i) => <tr key={i.id}><td style={styles.td}>{i.sistema}</td><td style={styles.td}>{i.operacao}</td><td style={styles.td}>{i.troca || ""}</td></tr>)}</tbody></table></div>
+                            {materiais.length > 0 && <><h4>Materiais previstos para o modelo</h4><ul>{materiais.map((m) => <li key={m.id}>{m.operacao}{m.qtde ? ` — ${m.qtde} ${m.um || ""}` : ""}</li>)}</ul></>}
+                          </div>
+                        )}
+                      </div>
                     );
                   })}
                 </div>
               </section>
             )}
 
-            <section style={styles.box}>
-              <h2 style={styles.boxTitulo}>Resumo por turno</h2>
-              <div style={isMobile ? styles.kpiGridMobile : styles.kpiGrid}>
-                <Card titulo="T1 - Feitos" valor={checklistsT1.length} />
-                <Card titulo="T1 - Pendentes" valor={pendentesT1.length} />
-                <Card titulo="T2 - Feitos" valor={checklistsT2.length} />
-                <Card titulo="T2 - Pendentes" valor={pendentesT2.length} />
-              </div>
-              <div style={isMobile ? styles.gridMobile : styles.grid2}>
-                <div style={styles.alertaItem}>
-                  <strong>Turno 1 - 06h</strong><br />
-                  Obrigatórios: {equipamentosObrigatorios.length}<br />
-                  Concluídos: {checklistsT1.length}<br />
-                  Pendentes: {pendentesT1.length}<br />
-                  Avarias: {avariasT1.length}
-                </div>
-                <div style={styles.alertaItem}>
-                  <strong>Turno 2 - 18h</strong><br />
-                  Obrigatórios: {equipamentosObrigatorios.length}<br />
-                  Concluídos: {checklistsT2.length}<br />
-                  Pendentes: {pendentesT2.length}<br />
-                  Avarias: {avariasT2.length}
-                </div>
-              </div>
-            </section>
-
-            {(filtroAdmin === "TODOS" || filtroAdmin === "AVARIAS") && (
+            {filtroAdmin === "MAPA_52" && (
               <section style={styles.box}>
-                <h2 style={styles.boxTitulo}>Máquinas com avaria na data</h2>
-                {comAvariaHoje.length === 0 && <p>Nenhuma avaria registrada.</p>}
-                {comAvariaHoje.map((c) => (
-                  <div key={c.id} style={styles.alertaItem}>
-                    <strong>{c.tag} - {c.resultado_final}</strong><br />
-                    {c.tipo_equipamento} | Modelo: {c.modelo || "Não informado"}<br />
-                    Situação: {c.situacao_equipamento}<br />
-                    Área: {c.area}<br />
-                    Operador: {c.operador_nome} | Horário: {c.hora_checklist || ""}<br />
-                    {c.horimetro && <>Horímetro: {c.horimetro}<br /></>}
-                    <ul>
-                      {respostasBanco.filter((r) => r.checklist_id === c.id && r.status === "NÃO OK").map((r) => (
-                        <li key={r.id}>{r.item_descricao} - {r.observacao}</li>
+                <h2 style={styles.boxTitulo}>Mapa de 52 Semanas</h2>
+                <p style={styles.textoApoio}>P = Programado | E = Executado | A = Atrasado. O mapa é recalculado quando uma execução é registrada.</p>
+                <div style={isMobile ? styles.gridMobile : styles.grid2}>
+                  <Campo label="Ano"><input type="number" min="2025" max="2035" value={mapaAno} onChange={(e) => setMapaAno(Number(e.target.value) || Number(hojeISO().slice(0, 4)))} style={styles.input} /></Campo>
+                  <Campo label="Buscar equipamento"><input value={mapaBusca} onChange={(e) => setMapaBusca(e.target.value)} placeholder="TAG, modelo ou plano" style={styles.input} /></Campo>
+                </div>
+                <div style={styles.legendaMapa}><span style={styles.mapaProgramado}>P</span> Programado <span style={styles.mapaExecutado}>E</span> Executado <span style={styles.mapaAtrasado}>A</span> Atrasado</div>
+                <div style={styles.mapaScroll}>
+                  <table style={styles.mapaTabela}>
+                    <thead><tr><th style={styles.mapaCabecalhoFixo}>Equipamento / plano</th>{Array.from({ length: semanasNoAnoISO(mapaAno) }, (_, i) => i + 1).map((sem) => <th key={sem} style={styles.mapaTh}>S{String(sem).padStart(2, "0")}</th>)}</tr></thead>
+                    <tbody>
+                      {mapaPlanosFiltrados.map((plano) => (
+                        <tr key={plano.id || `${plano.tag}-${plano.plano_tipo}`}>
+                          <td style={styles.mapaTdFixo}><strong>{plano.tag}</strong><br /><small>{plano.modelo_plano} — {plano.plano_tipo}</small></td>
+                          {Array.from({ length: semanasNoAnoISO(mapaAno) }, (_, i) => i + 1).map((sem) => {
+                            const prog = plano.id ? programacaoPorPlanoSemana.get(`${plano.id}|${mapaAno}|${sem}`) : undefined;
+                            if (!prog) return <td key={sem} style={styles.mapaTd}></td>;
+                            const atrasado = (prog.status === "ATRASADO" || (prog.status === "PROGRAMADO" && prog.data_programada < hojeDashboard));
+                            const letra = prog.status === "EXECUTADO" ? "E" : prog.status === "CANCELADO" ? "C" : atrasado ? "A" : "P";
+                            const estilo = prog.status === "EXECUTADO" ? styles.mapaExecutado : atrasado ? styles.mapaAtrasado : prog.status === "CANCELADO" ? styles.mapaCancelado : styles.mapaProgramado;
+                            return <td key={sem} style={styles.mapaTd}><button title={`${plano.tag} - ${plano.plano_tipo} - ${dataISOParaBR(prog.data_programada)}`} onClick={() => prog.status !== "EXECUTADO" && selecionarPlanoParaOS(plano)} style={estilo}>{letra}</button></td>;
+                          })}
+                        </tr>
                       ))}
-                    </ul>
-                    <div style={styles.previewLinha}>
-                      {c.foto_evidencia_url && <a href={c.foto_evidencia_url} target="_blank" style={styles.linkFoto}>Abrir foto da evidência</a>}
-                      {c.foto_horimetro_url && <a href={c.foto_horimetro_url} target="_blank" style={styles.linkFoto}>Abrir foto do horímetro</a>}
-                    </div>
-                  </div>
-                ))}
+                    </tbody>
+                  </table>
+                </div>
               </section>
             )}
 
-            {(filtroAdmin === "TODOS" || filtroAdmin === "PENDENTES") && (
+            {filtroAdmin === "OS_MANUAL" && (
               <section style={styles.box}>
-                <h2 style={styles.boxTitulo}>Pendentes obrigatórios - {nomeTurno(turnoSelecionado)}</h2>
-                <div style={isMobile ? styles.pendentesGridMobile : styles.pendentesGrid}>
-                  {pendentesHoje.map((e) => (
-                    <div key={e.tag} style={styles.pendenteItem}>
-                      <strong>{e.tag}</strong><br />
-                      {e.tipo_equipamento}<br />
-                      <small>{e.area}</small><br />
-                      <span style={horaAtual >= 10 ? styles.badgeAtrasado : styles.badgeAguardando}>{horaAtual >= 10 ? "Pendente após 10h" : "Pendente"}</span>
-                    </div>
-                  ))}
+                <h2 style={styles.boxTitulo}>Registro manual de OS / execução preventiva</h2>
+                <p style={styles.textoApoio}>Enquanto não houver integração com o CMMS, informe a OS aqui. Ao salvar, a próxima manutenção e o mapa são recalculados automaticamente.</p>
+                <div style={isMobile ? styles.gridMobile : styles.grid4}>
+                  <Campo label="Plano / equipamento"><select value={osPlanoId} onChange={(e) => setOsPlanoId(e.target.value)} style={styles.input}><option value="">Selecione</option>{planosPreventivos.map((p) => <option key={p.id} value={p.id}>{p.tag} — {p.plano_tipo} — {p.modelo_plano}</option>)}</select></Campo>
+                  <Campo label="Número da OS"><input value={osNumero} onChange={(e) => setOsNumero(e.target.value)} placeholder="Ex.: 245321" style={styles.input} /></Campo>
+                  <Campo label="Data executada"><input type="date" value={osDataExecucao} onChange={(e) => setOsDataExecucao(e.target.value)} style={styles.input} /></Campo>
+                  <Campo label="Executor"><input value={osExecutor} onChange={(e) => setOsExecutor(e.target.value)} placeholder="Nome do técnico/responsável" style={styles.input} /></Campo>
                 </div>
+                <Campo label="Observação / serviço executado"><textarea value={osObservacao} onChange={(e) => setOsObservacao(e.target.value)} placeholder="Observação opcional" style={styles.textarea} /></Campo>
+                {planoOsSelecionado && <div style={styles.boxInternoDestaque}><strong>{planoOsSelecionado.tag} — {planoOsSelecionado.plano_tipo}</strong><br />{planoOsSelecionado.checklist_referencia}<br /><small>Recálculo: {planoOsSelecionado.base_recalculo === "EXECUCAO" ? "pela data executada" : "pela data programada"} | Intervalo: {planoOsSelecionado.periodicidade_valor} {planoOsSelecionado.periodicidade_unidade.toLowerCase()}</small></div>}
+                <div style={styles.botoesLinha}><button onClick={registrarExecucaoPreventiva} style={styles.botaoVerde}>Registrar execução e recalcular próxima</button></div>
+
+                <section style={styles.boxInterno}>
+                  <h3 style={styles.subtituloSecao}>Últimas execuções registradas</h3>
+                  {programacoesExecutadasRecentes.slice(0, 30).map((p) => <div key={p.id} style={styles.linhaHistorico}><div><strong>{p.tag} — {p.plano_tipo}</strong><br />OS: {p.numero_os || "Sem OS"} | Executada: {dataISOParaBR(p.data_execucao || p.data_programada)} | {p.executor || "Executor não informado"}</div><button onClick={() => abrirHistoricoEquipamento(p.tag)} style={styles.botaoCinza}>Histórico</button></div>)}
+                </section>
               </section>
             )}
 
-            <section style={styles.box}>
-              <h2 style={styles.boxTitulo}>Itens N/A para validação</h2>
-              {sugestoesNA.length === 0 && <p>Nenhum item N/A registrado.</p>}
-              {sugestoesNA.map((s) => (
-                <div key={s.key} style={styles.naCard}>
-                  <strong>Modelo: {s.modeloLabel}</strong><br />
-                  Item: {s.itemDescricao}<br />
-                  Ocorrências: {s.totalOcorrencias}<br />
-                  Observações:
-                  <ul>{s.observacoes.map((o: string, idx: number) => <li key={idx}>{o}</li>)}</ul>
-                  {s.decisao ? (
-                    <div style={styles.decisaoBox}>Decisão: <strong>{s.decisao.decisao}</strong></div>
-                  ) : (
-                    <div style={styles.botoesLinha}>
-                      <button onClick={() => decidirNA(s, "REMOVER")} style={styles.botaoVerde}>Retirar dos modelos iguais</button>
-                      <button onClick={() => decidirNA(s, "MANTER")} style={styles.botaoCinza}>Manter item</button>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </section>
-
-            <section style={styles.box}>
-              <h2 style={styles.boxTitulo}>Usuários do sistema</h2>
-              <p style={styles.textoApoio}>
-                Crie, bloqueie e altere perfis de usuários sem e-mail. O próprio operador também pode criar conta na tela inicial.
-              </p>
-
-              <div style={isMobile ? styles.gridMobile : styles.grid4}>
-                <Campo label="Nome completo">
-                  <input value={usuarioAdminNome} onChange={(e) => setUsuarioAdminNome(e.target.value)} placeholder="Nome completo" style={styles.input} />
-                </Campo>
-                <Campo label="Usuário">
-                  <input value={usuarioAdminLogin} onChange={(e) => setUsuarioAdminLogin(normalizarUsuario(e.target.value))} placeholder="Ex.: joao.s" style={styles.input} />
-                </Campo>
-                <Campo label="Senha">
-                  <input value={usuarioAdminSenha} onChange={(e) => setUsuarioAdminSenha(e.target.value)} placeholder="Mínimo 6 caracteres" style={styles.input} />
-                </Campo>
-                <Campo label="Perfil">
-                  <select value={usuarioAdminPerfil} onChange={(e) => setUsuarioAdminPerfil(e.target.value as Perfil)} style={styles.input}>
-                    <option value="OPERADOR">OPERADOR</option>
-                    <option value="ADMIN">ADMIN</option>
-                  </select>
-                </Campo>
-              </div>
-
-              <div style={styles.obrigatorioBox}>
-                <label style={styles.checkLabel}>
-                  <input type="checkbox" checked={usuarioAdminAtivo} onChange={(e) => setUsuarioAdminAtivo(e.target.checked)} />
-                  Usuário ativo
-                </label>
-              </div>
-
-              <div style={styles.botoesLinha}>
-                <button onClick={salvarUsuarioAppAdmin} style={styles.botaoVerde}>{usuarioAdminEditando ? "Salvar usuário" : "Criar usuário"}</button>
-                <button onClick={limparFormularioUsuarioAdmin} style={styles.botaoCinza}>Limpar</button>
-              </div>
-
-              <div style={styles.tabelaEquipamentos}>
-                {usuariosApp.map((u) => (
-                  <div key={u.usuario} style={isMobile ? styles.linhaEquipamentoMobile : styles.linhaEquipamento}>
-                    <div>
-                      <strong>{u.nome}</strong><br />
-                      Usuário: {u.usuario} | Perfil: {u.perfil}<br />
-                      <span style={u.ativo === false ? styles.badgeOpcional : styles.badgeObrigatorio}>
-                        {u.ativo === false ? "Bloqueado" : "Ativo"}
-                      </span>
-                    </div>
-                    <div style={styles.botoesLinha}>
-                      <button onClick={() => editarUsuarioApp(u)} style={styles.botaoCinza}>Editar</button>
-                      <button onClick={() => alternarUsuarioAtivo(u)} style={u.ativo === false ? styles.botaoVerde : styles.botaoPerigo}>
-                        {u.ativo === false ? "Ativar" : "Bloquear"}
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </section>
-
-            <section style={styles.box}>
-              <h2 style={styles.boxTitulo}>Configuração do Checklist</h2>
-              <p style={styles.textoApoio}>
-                Configure os itens do checklist direto pelo app. Você pode retirar um item para todos os equipamentos
-                ou retirar apenas para todos os equipamentos do mesmo modelo.
-              </p>
-
-              <div style={isMobile ? styles.gridMobile : styles.grid3}>
-                <Campo label="Módulo do checklist">
-                  <select value={itemChecklistModulo} onChange={(e) => setItemChecklistModulo(e.target.value as ModuloEquipamento)} style={styles.input}>
-                    <option value="FROTA">Frota</option>
-                    <option value="MONOVIA">Monovia / Talha</option>
-                  </select>
-                </Campo>
-
-                <Campo label="Número do item">
-                  <input
-                    value={itemChecklistNumero}
-                    onChange={(e) => setItemChecklistNumero(e.target.value.replace(/\D/g, ""))}
-                    placeholder="Ex.: 16"
-                    style={styles.input}
-                  />
-                </Campo>
-
-                <Campo label={itemChecklistEditando ? `Editando item ${itemChecklistEditando}` : "Descrição do item"}>
-                  <input
-                    value={itemChecklistDescricao}
-                    onChange={(e) => setItemChecklistDescricao(e.target.value)}
-                    placeholder="Ex.: Verificar carregador de bateria"
-                    style={styles.input}
-                  />
-                </Campo>
-              </div>
-
-              <div style={styles.botoesLinha}>
-                <button onClick={salvarItemChecklist} style={styles.botaoVerde}>
-                  {itemChecklistEditando ? "Salvar alteração do item" : "Adicionar item"}
-                </button>
-                <button onClick={limparFormularioItemChecklist} style={styles.botaoCinza}>
-                  Limpar
-                </button>
-              </div>
-
-              <section style={styles.boxInternoDestaque}>
-                <h3 style={styles.subtituloSecao}>Retirada por modelo</h3>
-                <p style={styles.textoApoio}>
-                  Se você selecionar um modelo e clicar em “Retirar deste modelo”, o item some do checklist
-                  de todos os equipamentos com o mesmo modelo.
-                </p>
-                <Campo label="Modelo para retirada específica">
-                  <select value={modeloConfigSelecionado} onChange={(e) => setModeloConfigSelecionado(e.target.value)} style={styles.input}>
-                    <option value="">Selecione um modelo</option>
-                    {modelosDisponiveis.map((m) => (
-                      <option key={m.chave} value={m.chave}>{m.label}</option>
-                    ))}
-                  </select>
-                </Campo>
-              </section>
-
-              <div style={styles.tabelaEquipamentos}>
-                {itensConfigPorModulo(itemChecklistModulo).sort((a, b) => a.numero - b.numero).map((item) => (
-                  <div key={`${item.modulo || "FROTA"}-${item.numero}`} style={isMobile ? styles.linhaEquipamentoMobile : styles.linhaEquipamento}>
-                    <div>
-                      <strong>{item.numero}. {item.descricao}</strong><br />
-                      <small>Módulo: {nomeModulo((item.modulo || "FROTA") as ModuloEquipamento)}</small><br />
-                      <span style={item.ativo === false ? styles.badgeOpcional : styles.badgeObrigatorio}>
-                        {item.ativo === false ? "Inativo geral / retirado de todos" : "Ativo geral"}
-                      </span>
-                    </div>
-                    <div style={styles.botoesLinha}>
-                      <button onClick={() => editarItemChecklist(item)} style={styles.botaoCinza}>Editar</button>
-                      {item.ativo === false ? (
-                        <button onClick={() => alterarAtivoItemChecklist(item, true)} style={styles.botaoVerde}>Reativar geral</button>
-                      ) : (
-                        <button onClick={() => alterarAtivoItemChecklist(item, false)} style={styles.botaoPerigo}>Retirar de todos</button>
-                      )}
-                      <button onClick={() => retirarItemPorModelo(item)} style={styles.botaoPreto}>Retirar deste modelo</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <section style={styles.boxInterno}>
-                <h3 style={styles.subtituloSecao}>Itens retirados por modelo</h3>
-                {itensRetiradosPorModelo.length === 0 && <p>Nenhum item retirado por modelo.</p>}
-                {itensRetiradosPorModelo.map((d) => (
-                  <div key={`${d.modelo_chave}-${d.item_numero}`} style={isMobile ? styles.linhaEquipamentoMobile : styles.linhaEquipamento}>
-                    <div>
-                      <strong>Modelo: {d.modelo_label}</strong><br />
-                      Item {d.item_numero}: {d.item_descricao}
-                    </div>
-                    <button onClick={() => reativarItemPorModelo(d)} style={styles.botaoVerde}>Reativar neste modelo</button>
-                  </div>
-                ))}
-              </section>
-            </section>
-
-            <section style={styles.box}>
-              <h2 style={styles.boxTitulo}>Máquinas paradas / reserva</h2>
-              {paradasManutencao.length === 0 && <p>Nenhuma máquina parada aguardando ação.</p>}
-              {paradasManutencao.map((p) => {
-                const inicio = new Date(`${p.data_inicio}T${p.hora_inicio || "00:00:00"}`);
-                const horas = Math.max(0, (Date.now() - inicio.getTime()) / 3600000);
-
-                return (
-                  <div key={p.id} style={styles.alertaItem}>
-                    <strong>{p.tag_original} - OS {p.numero_os}</strong><br />
-                    Status: {p.status}<br />
-                    Motivo: {p.motivo}<br />
-                    Operador: {p.operador_nome}<br />
-                    Afeta operação: {p.afeta_operacao ? "SIM" : "NÃO"}<br />
-                    Tempo parado atual: {horas.toFixed(1)} h<br />
-                    {p.tag_reserva && <>Reserva definida: {p.tag_reserva}<br /></>}
-
-                    {p.afeta_operacao && p.status === "AGUARDANDO_RESERVA" && (
-                      <div style={styles.botoesLinha}>
-                        <select value={tagReservaSelecionada} onChange={(e) => setTagReservaSelecionada(e.target.value)} style={styles.input}>
-                          <option value="">Selecionar equipamento reserva</option>
-                          {equipamentosReservaDisponiveis.map((e) => (
-                            <option key={e.tag} value={e.tag}>{e.tag} - {e.tipo_equipamento} - {e.area}</option>
-                          ))}
-                        </select>
-                        <input value={observacaoAdminParada} onChange={(e) => setObservacaoAdminParada(e.target.value)} placeholder="Observação do analista" style={styles.input} />
-                        <button onClick={() => definirReserva(p)} style={styles.botaoVerde}>Definir reserva</button>
-                      </div>
-                    )}
-
-                    <div style={styles.botoesLinha}>
-                      <button onClick={() => finalizarParada(p)} style={styles.botaoPreto}>Finalizar manutenção / reativar checklist</button>
-                    </div>
-                  </div>
-                );
-              })}
-            </section>
-
-            <section style={styles.box}>
-              <h2 style={styles.boxTitulo}>Cadastro e edição de equipamentos</h2>
-              <Campo label="Buscar cadastro">
-                <input value={buscaCadastro} onChange={(e) => setBuscaCadastro(e.target.value)} placeholder="TAG, modelo, área..." style={styles.input} />
-              </Campo>
-
-              {buscaCadastro && (
+            {filtroAdmin === "EQUIPAMENTOS" && (
+              <section style={styles.box}>
+                <h2 style={styles.boxTitulo}>Cadastro e edição de equipamentos</h2>
+                <Campo label="Buscar cadastro"><input value={buscaCadastro} onChange={(e) => setBuscaCadastro(e.target.value)} placeholder="TAG, modelo, área..." style={styles.input} /></Campo>
                 <div style={styles.tabelaEquipamentos}>
-                  {equipamentosCadastroFiltrados.map((e) => (
+                  {(buscaCadastro ? equipamentosCadastroFiltrados : equipamentos.slice(0, 120)).map((e) => (
                     <div key={e.tag} style={isMobile ? styles.linhaEquipamentoMobile : styles.linhaEquipamento}>
-                      <div>
-                        <strong>{e.tag}</strong><br />
-                        {e.tipo_equipamento} | Modelo: {e.modelo || "Não informado"}<br />
-                        <small>{e.local_correto} - {e.area}</small><br />
-                        <span style={e.checklist_obrigatorio === false ? styles.badgeOpcional : styles.badgeObrigatorio}>{e.checklist_obrigatorio === false ? "Não obrigatório" : "Obrigatório"}</span>
-                      </div>
-                      <button onClick={() => { setEditandoTag(e.tag); setEquipamentoEdicao({ ...e }); }} style={styles.botaoCinza}>Editar</button>
+                      <div><strong>{e.tag}</strong><br />{e.tipo_equipamento} | Modelo: {e.modelo || "Não informado"}<br /><small>{e.local_correto} — {e.area}</small><br /><span style={styles.badgeAguardando}>{nomePeriodicidadeChecklist(periodicidadeChecklistDoEquipamento(e))}</span> <span style={e.checklist_obrigatorio === false ? styles.badgeOpcional : styles.badgeObrigatorio}>{e.checklist_obrigatorio === false ? "Não obrigatório" : "Obrigatório"}</span></div>
+                      <div style={styles.botoesLinha}><button onClick={() => { setEditandoTag(e.tag); setEquipamentoEdicao({ ...e }); }} style={styles.botaoCinza}>Editar</button><button onClick={() => abrirHistoricoEquipamento(e.tag)} style={styles.botaoPreto}>Histórico</button></div>
                     </div>
                   ))}
                 </div>
-              )}
+                <section style={styles.boxInternoDestaque}>
+                  <h3>{editandoTag ? `Editando ${editandoTag}` : "Novo cadastro"}</h3>
+                  <div style={isMobile ? styles.gridMobile : styles.grid3}>
+                    <Campo label="TAG"><input value={equipamentoEdicao.tag} onChange={(e) => setEquipamentoEdicao({ ...equipamentoEdicao, tag: e.target.value })} style={styles.input} /></Campo>
+                    <Campo label="Tipo de equipamento"><input value={equipamentoEdicao.tipo_equipamento} onChange={(e) => setEquipamentoEdicao({ ...equipamentoEdicao, tipo_equipamento: e.target.value })} style={styles.input} /></Campo>
+                    <Campo label="Módulo"><select value={moduloDoEquipamento(equipamentoEdicao)} onChange={(e) => setEquipamentoEdicao({ ...equipamentoEdicao, modulo: e.target.value as ModuloEquipamento, periodicidade_checklist: e.target.value === "MONOVIA" ? "MENSAL" : (equipamentoEdicao.periodicidade_checklist || "DIARIO") })} style={styles.input}><option value="FROTA">Frota</option><option value="MONOVIA">Monovia / Talha</option></select></Campo>
+                    <Campo label="Periodicidade checklist"><select value={periodicidadeChecklistDoEquipamento(equipamentoEdicao)} onChange={(e) => setEquipamentoEdicao({ ...equipamentoEdicao, periodicidade_checklist: e.target.value as PeriodicidadeChecklist })} style={styles.input}><option value="DIARIO">Diário - 1 vez/dia</option><option value="SEMANAL">Semanal - 1 vez/semana</option><option value="MENSAL">Mensal - 1 vez/mês</option></select></Campo>
+                    <Campo label="Modelo"><input value={equipamentoEdicao.modelo || ""} onChange={(e) => setEquipamentoEdicao({ ...equipamentoEdicao, modelo: e.target.value })} style={styles.input} /></Campo>
+                    <Campo label="Nº série"><input value={equipamentoEdicao.numero_serie || ""} onChange={(e) => setEquipamentoEdicao({ ...equipamentoEdicao, numero_serie: e.target.value })} style={styles.input} /></Campo>
+                    <Campo label="Local"><input value={equipamentoEdicao.local_correto || ""} onChange={(e) => setEquipamentoEdicao({ ...equipamentoEdicao, local_correto: e.target.value })} style={styles.input} /></Campo>
+                    <Campo label="Área"><input value={equipamentoEdicao.area || ""} onChange={(e) => setEquipamentoEdicao({ ...equipamentoEdicao, area: e.target.value })} style={styles.input} /></Campo>
+                    <Campo label="Supervisor"><input value={equipamentoEdicao.supervisor_responsavel || ""} onChange={(e) => setEquipamentoEdicao({ ...equipamentoEdicao, supervisor_responsavel: e.target.value })} style={styles.input} /></Campo>
+                    <Campo label="E-mail supervisor"><input value={equipamentoEdicao.email_supervisor || ""} onChange={(e) => setEquipamentoEdicao({ ...equipamentoEdicao, email_supervisor: e.target.value })} style={styles.input} /></Campo>
+                    <Campo label="WhatsApp supervisor"><input value={equipamentoEdicao.whatsapp_supervisor || ""} onChange={(e) => setEquipamentoEdicao({ ...equipamentoEdicao, whatsapp_supervisor: e.target.value })} style={styles.input} /></Campo>
+                  </div>
+                  <div style={styles.obrigatorioBox}><label style={styles.checkLabel}><input type="checkbox" checked={equipamentoEdicao.checklist_obrigatorio !== false} onChange={(e) => setEquipamentoEdicao({ ...equipamentoEdicao, checklist_obrigatorio: e.target.checked })} /> Checklist obrigatório conforme periodicidade cadastrada</label></div>
+                  <div style={styles.botoesLinha}><button onClick={salvarEquipamento} style={styles.botaoVerde}>{editandoTag ? "Salvar alteração" : "Cadastrar equipamento"}</button><button onClick={() => { setEquipamentoEdicao(equipamentoVazio); setEditandoTag(""); }} style={styles.botaoCinza}>Limpar</button></div>
+                </section>
+              </section>
+            )}
 
-              <h3>{editandoTag ? `Editando ${editandoTag}` : "Novo cadastro"}</h3>
-              <div style={isMobile ? styles.gridMobile : styles.grid3}>
-                <Campo label="TAG"><input value={equipamentoEdicao.tag} onChange={(e) => setEquipamentoEdicao({ ...equipamentoEdicao, tag: e.target.value })} style={styles.input} /></Campo>
-                <Campo label="Tipo de equipamento"><input value={equipamentoEdicao.tipo_equipamento} onChange={(e) => setEquipamentoEdicao({ ...equipamentoEdicao, tipo_equipamento: e.target.value })} style={styles.input} /></Campo>
-                <Campo label="Módulo">
-                  <select value={moduloDoEquipamento(equipamentoEdicao)} onChange={(e) => setEquipamentoEdicao({ ...equipamentoEdicao, modulo: e.target.value as ModuloEquipamento })} style={styles.input}>
-                    <option value="FROTA">Frota</option>
-                    <option value="MONOVIA">Monovia / Talha</option>
-                  </select>
-                </Campo>
-                <Campo label="Modelo"><input value={equipamentoEdicao.modelo || ""} onChange={(e) => setEquipamentoEdicao({ ...equipamentoEdicao, modelo: e.target.value })} style={styles.input} /></Campo>
-                <Campo label="Nº série"><input value={equipamentoEdicao.numero_serie || ""} onChange={(e) => setEquipamentoEdicao({ ...equipamentoEdicao, numero_serie: e.target.value })} style={styles.input} /></Campo>
-                <Campo label="Local"><input value={equipamentoEdicao.local_correto || ""} onChange={(e) => setEquipamentoEdicao({ ...equipamentoEdicao, local_correto: e.target.value })} style={styles.input} /></Campo>
-                <Campo label="Área"><input value={equipamentoEdicao.area || ""} onChange={(e) => setEquipamentoEdicao({ ...equipamentoEdicao, area: e.target.value })} style={styles.input} /></Campo>
-                <Campo label="Supervisor"><input value={equipamentoEdicao.supervisor_responsavel || ""} onChange={(e) => setEquipamentoEdicao({ ...equipamentoEdicao, supervisor_responsavel: e.target.value })} style={styles.input} /></Campo>
-                <Campo label="E-mail supervisor"><input value={equipamentoEdicao.email_supervisor || ""} onChange={(e) => setEquipamentoEdicao({ ...equipamentoEdicao, email_supervisor: e.target.value })} style={styles.input} /></Campo>
-                <Campo label="WhatsApp supervisor"><input value={equipamentoEdicao.whatsapp_supervisor || ""} onChange={(e) => setEquipamentoEdicao({ ...equipamentoEdicao, whatsapp_supervisor: e.target.value })} style={styles.input} /></Campo>
-              </div>
-              <div style={styles.obrigatorioBox}>
-                <label style={styles.checkLabel}>
-                  <input type="checkbox" checked={equipamentoEdicao.checklist_obrigatorio !== false} onChange={(e) => setEquipamentoEdicao({ ...equipamentoEdicao, checklist_obrigatorio: e.target.checked })} />
-                  Checklist diário obrigatório
-                </label>
-              </div>
-              <div style={styles.botoesLinha}>
-                <button onClick={salvarEquipamento} style={styles.botaoVerde}>{editandoTag ? "Salvar alteração" : "Cadastrar equipamento"}</button>
-                <button onClick={() => { setEquipamentoEdicao(equipamentoVazio); setEditandoTag(""); }} style={styles.botaoCinza}>Limpar</button>
-              </div>
-            </section>
+            {filtroAdmin === "HISTORICO" && (
+              <section style={styles.box}>
+                <h2 style={styles.boxTitulo}>Histórico por equipamento</h2>
+                <Campo label="Equipamento"><select value={historicoTag} onChange={(e) => setHistoricoTag(e.target.value)} style={styles.input}><option value="">Selecione uma TAG</option>{equipamentos.filter((e) => e.ativo !== false).map((e) => <option key={e.tag} value={e.tag}>{e.tag} — {e.tipo_equipamento} — {e.modelo || ""}</option>)}</select></Campo>
+                {!equipamentoHistorico && <div style={styles.estadoVazio}>Selecione um equipamento para ver somente o histórico dele.</div>}
+                {equipamentoHistorico && (
+                  <>
+                    <div style={isMobile ? styles.gridMobile : styles.grid4}>
+                      <Info label="TAG" valor={equipamentoHistorico.tag} destaque />
+                      <Info label="Modelo" valor={equipamentoHistorico.modelo || "Não informado"} />
+                      <Info label="Área" valor={equipamentoHistorico.area || "Não informada"} />
+                      <Info label="Checklist" valor={nomePeriodicidadeChecklist(periodicidadeChecklistDoEquipamento(equipamentoHistorico))} />
+                    </div>
+                    <section style={styles.boxInterno}>
+                      <h3 style={styles.subtituloSecao}>Checklists</h3>
+                      {historicoChecklists.length === 0 && <p>Nenhum checklist registrado.</p>}
+                      {historicoChecklists.slice(0, 50).map((c) => {
+                        const problemas = c.id ? respostasBanco.filter((r) => r.checklist_id === c.id && r.status === "NÃO OK") : [];
+                        return <div key={c.id} style={styles.linhaHistorico}><div><strong>{dataISOParaBR(c.data_checklist)} — {c.resultado_final}</strong><br />{c.operador_nome} | {c.hora_checklist || "Sem horário"}{problemas.map((r) => <div key={r.id} style={{ marginTop: 4 }}>Item {r.item_numero}: {r.observacao || r.item_descricao}</div>)}</div><div style={styles.previewLinha}>{c.foto_evidencia_url && <a href={c.foto_evidencia_url} target="_blank" style={styles.linkFoto}>Foto</a>}</div></div>;
+                      })}
+                    </section>
+                    <section style={styles.boxInterno}>
+                      <h3 style={styles.subtituloSecao}>Manutenções / OS</h3>
+                      {historicoProgramacoes.length === 0 && <p>Nenhuma programação ou execução registrada.</p>}
+                      {historicoProgramacoes.slice(0, 50).map((m) => <div key={m.id} style={styles.linhaHistorico}><div><strong>{m.plano_tipo} — {m.status}</strong><br />Programada: {dataISOParaBR(m.data_programada)}{m.data_execucao && <> | Executada: {dataISOParaBR(m.data_execucao)}</>}<br />{m.numero_os && <>OS: {m.numero_os} | </>}{m.executor || ""}<br />{m.observacao || ""}</div></div>)}
+                    </section>
+                  </>
+                )}
+              </section>
+            )}
+
+            {filtroAdmin === "NA_VALIDACAO" && (
+              <section style={styles.box}>
+                <h2 style={styles.boxTitulo}>Itens N/A para validação</h2>
+                <p style={styles.textoApoio}>Página separada para o ADMIN decidir se o item permanece ou deve ser retirado dos equipamentos do mesmo modelo.</p>
+                {sugestoesNA.length === 0 && <p>Nenhum item N/A registrado.</p>}
+                {sugestoesNA.map((s: any) => (
+                  <div key={s.key} style={styles.naCard}><strong>Modelo: {s.modeloLabel}</strong><br />Item {s.itemNumero}: {s.itemDescricao}<br />Ocorrências: {s.totalOcorrencias}<br />Observações:<ul>{s.observacoes.map((o: string, idx: number) => <li key={idx}>{o}</li>)}</ul>{s.decisao ? <div style={styles.decisaoBox}>Decisão: <strong>{s.decisao.decisao}</strong></div> : <div style={styles.botoesLinha}><button onClick={() => decidirNA(s, "REMOVER")} style={styles.botaoVerde}>Retirar dos modelos iguais</button><button onClick={() => decidirNA(s, "MANTER")} style={styles.botaoCinza}>Manter item</button></div>}</div>
+                ))}
+              </section>
+            )}
+
+            {filtroAdmin === "CHECKLIST" && (
+              <section style={styles.box}>
+                <h2 style={styles.boxTitulo}>Configuração dos itens de checklist</h2>
+                <p style={styles.textoApoio}>Aqui ficam apenas cadastro, edição e ativação geral. A retirada por modelo possui página própria.</p>
+                <div style={isMobile ? styles.gridMobile : styles.grid3}>
+                  <Campo label="Módulo"><select value={itemChecklistModulo} onChange={(e) => setItemChecklistModulo(e.target.value as ModuloEquipamento)} style={styles.input}><option value="FROTA">Frota</option><option value="MONOVIA">Monovia / Talha</option></select></Campo>
+                  <Campo label="Número do item"><input value={itemChecklistNumero} onChange={(e) => setItemChecklistNumero(e.target.value.replace(/\D/g, ""))} placeholder="Ex.: 16" style={styles.input} /></Campo>
+                  <Campo label={itemChecklistEditando ? `Editando item ${itemChecklistEditando}` : "Descrição do item"}><input value={itemChecklistDescricao} onChange={(e) => setItemChecklistDescricao(e.target.value)} style={styles.input} /></Campo>
+                </div>
+                <div style={styles.botoesLinha}><button onClick={salvarItemChecklist} style={styles.botaoVerde}>{itemChecklistEditando ? "Salvar alteração" : "Adicionar item"}</button><button onClick={limparFormularioItemChecklist} style={styles.botaoCinza}>Limpar</button></div>
+                <div style={styles.tabelaEquipamentos}>{itensConfigPorModulo(itemChecklistModulo).sort((a, b) => a.numero - b.numero).map((item) => <div key={`${item.modulo || "FROTA"}-${item.numero}`} style={isMobile ? styles.linhaEquipamentoMobile : styles.linhaEquipamento}><div><strong>{item.numero}. {item.descricao}</strong><br /><span style={item.ativo === false ? styles.badgeOpcional : styles.badgeObrigatorio}>{item.ativo === false ? "Inativo geral" : "Ativo geral"}</span></div><div style={styles.botoesLinha}><button onClick={() => editarItemChecklist(item)} style={styles.botaoCinza}>Editar</button>{item.ativo === false ? <button onClick={() => alterarAtivoItemChecklist(item, true)} style={styles.botaoVerde}>Reativar</button> : <button onClick={() => alterarAtivoItemChecklist(item, false)} style={styles.botaoPerigo}>Retirar de todos</button>}</div></div>)}</div>
+              </section>
+            )}
+
+            {filtroAdmin === "RETIRAR_MODELO" && (
+              <section style={styles.box}>
+                <h2 style={styles.boxTitulo}>Retirar item por modelo</h2>
+                <p style={styles.textoApoio}>Selecione o modelo e retire somente os itens que não se aplicam a esse grupo de equipamentos.</p>
+                <div style={isMobile ? styles.gridMobile : styles.grid2}>
+                  <Campo label="Módulo dos itens"><select value={itemChecklistModulo} onChange={(e) => setItemChecklistModulo(e.target.value as ModuloEquipamento)} style={styles.input}><option value="FROTA">Frota</option><option value="MONOVIA">Monovia / Talha</option></select></Campo>
+                  <Campo label="Modelo"><select value={modeloConfigSelecionado} onChange={(e) => setModeloConfigSelecionado(e.target.value)} style={styles.input}><option value="">Selecione um modelo</option>{modelosDisponiveis.map((m) => <option key={m.chave} value={m.chave}>{m.label}</option>)}</select></Campo>
+                </div>
+                <div style={styles.tabelaEquipamentos}>{itensConfigPorModulo(itemChecklistModulo).filter((i) => i.ativo !== false).sort((a, b) => a.numero - b.numero).map((item) => <div key={`${item.modulo}-${item.numero}`} style={isMobile ? styles.linhaEquipamentoMobile : styles.linhaEquipamento}><div><strong>{item.numero}. {item.descricao}</strong></div><button onClick={() => retirarItemPorModelo(item)} style={styles.botaoPreto}>Retirar deste modelo</button></div>)}</div>
+                <section style={styles.boxInterno}><h3 style={styles.subtituloSecao}>Itens já retirados por modelo</h3>{itensRetiradosPorModelo.length === 0 && <p>Nenhum item retirado.</p>}{itensRetiradosPorModelo.map((d) => <div key={`${d.modelo_chave}-${d.item_numero}`} style={styles.linhaHistorico}><div><strong>{d.modelo_label}</strong><br />Item {d.item_numero}: {d.item_descricao}</div><button onClick={() => reativarItemPorModelo(d)} style={styles.botaoVerde}>Reativar</button></div>)}</section>
+              </section>
+            )}
+
+            {filtroAdmin === "USUARIOS" && (
+              <section style={styles.box}>
+                <h2 style={styles.boxTitulo}>Usuários do sistema</h2>
+                <p style={styles.textoApoio}>O ADMIN não visualiza senhas. Ele pode criar usuário, bloquear, alterar perfil ou redefinir a senha.</p>
+                <div style={isMobile ? styles.gridMobile : styles.grid4}>
+                  <Campo label="Nome completo"><input value={usuarioAdminNome} onChange={(e) => setUsuarioAdminNome(e.target.value)} style={styles.input} /></Campo>
+                  <Campo label="Usuário"><input value={usuarioAdminLogin} onChange={(e) => setUsuarioAdminLogin(normalizarUsuario(e.target.value))} style={styles.input} /></Campo>
+                  <Campo label={usuarioAdminEditando ? "Nova senha (opcional)" : "Senha inicial"}><input value={usuarioAdminSenha} onChange={(e) => setUsuarioAdminSenha(e.target.value)} type="password" placeholder={usuarioAdminEditando ? "Em branco mantém a senha atual" : "Mínimo 6 caracteres"} style={styles.input} /></Campo>
+                  <Campo label="Perfil"><select value={usuarioAdminPerfil} onChange={(e) => setUsuarioAdminPerfil(e.target.value as Perfil)} style={styles.input}><option value="OPERADOR">OPERADOR</option><option value="ADMIN">ADMIN</option></select></Campo>
+                </div>
+                <div style={styles.obrigatorioBox}><label style={styles.checkLabel}><input type="checkbox" checked={usuarioAdminAtivo} onChange={(e) => setUsuarioAdminAtivo(e.target.checked)} /> Usuário ativo</label></div>
+                <div style={styles.botoesLinha}><button onClick={salvarUsuarioAppAdmin} style={styles.botaoVerde}>{usuarioAdminEditando ? "Salvar usuário" : "Criar usuário"}</button><button onClick={limparFormularioUsuarioAdmin} style={styles.botaoCinza}>Limpar</button></div>
+                <div style={styles.tabelaEquipamentos}>{usuariosApp.map((u) => <div key={u.usuario} style={isMobile ? styles.linhaEquipamentoMobile : styles.linhaEquipamento}><div><strong>{u.nome}</strong><br />Usuário: {u.usuario} | Perfil: {u.perfil}<br /><span style={styles.textoApoio}>Senha: protegida / não exibida</span><br /><span style={u.ativo === false ? styles.badgeOpcional : styles.badgeObrigatorio}>{u.ativo === false ? "Bloqueado" : "Ativo"}</span></div><div style={styles.botoesLinha}><button onClick={() => editarUsuarioApp(u)} style={styles.botaoCinza}>Editar / redefinir senha</button><button onClick={() => alternarUsuarioAtivo(u)} style={u.ativo === false ? styles.botaoVerde : styles.botaoPerigo}>{u.ativo === false ? "Ativar" : "Bloquear"}</button></div></div>)}</div>
+              </section>
+            )}
+
+            {filtroAdmin === "PARADAS" && (
+              <section style={styles.box}>
+                <h2 style={styles.boxTitulo}>Máquinas paradas / reserva</h2>
+                {paradasManutencao.length === 0 && <p>Nenhuma máquina parada aguardando ação.</p>}
+                {paradasManutencao.map((p) => {
+                  const inicio = new Date(`${p.data_inicio}T${p.hora_inicio || "00:00:00"}`);
+                  const horas = Math.max(0, (Date.now() - inicio.getTime()) / 3600000);
+                  return <div key={p.id} style={styles.alertaItem}><strong>{p.tag_original} — OS {p.numero_os}</strong><br />Status: {p.status}<br />Motivo: {p.motivo}<br />Operador: {p.operador_nome}<br />Afeta operação: {p.afeta_operacao ? "SIM" : "NÃO"}<br />Tempo parado atual: {horas.toFixed(1)} h<br />{p.tag_reserva && <>Reserva definida: {p.tag_reserva}<br /></>}{p.afeta_operacao && p.status === "AGUARDANDO_RESERVA" && <div style={styles.botoesLinha}><select value={tagReservaSelecionada} onChange={(e) => setTagReservaSelecionada(e.target.value)} style={styles.input}><option value="">Selecionar equipamento reserva</option>{equipamentosReservaDisponiveis.map((e) => <option key={e.tag} value={e.tag}>{e.tag} — {e.tipo_equipamento} — {e.area}</option>)}</select><input value={observacaoAdminParada} onChange={(e) => setObservacaoAdminParada(e.target.value)} placeholder="Observação" style={styles.input} /><button onClick={() => definirReserva(p)} style={styles.botaoVerde}>Definir reserva</button></div>}<div style={styles.botoesLinha}><button onClick={() => finalizarParada(p)} style={styles.botaoPreto}>Finalizar manutenção / reativar checklist</button><button onClick={() => abrirHistoricoEquipamento(p.tag_original)} style={styles.botaoCinza}>Histórico</button></div></div>;
+                })}
+              </section>
+            )}
+
+            {filtroAdmin === "RELATORIOS" && (
+              <section style={styles.box}>
+                <h2 style={styles.boxTitulo}>Relatório de Checklist de Equipamentos</h2>
+                <p style={styles.textoApoio}>O relatório atual foi mantido. Selecione período e equipamentos para gerar o PDF.</p>
+                <div style={isMobile ? styles.gridMobile : styles.grid4}>
+                  <Campo label="Data inicial"><input type="date" value={relatorioDataInicio} onChange={(e) => setRelatorioDataInicio(e.target.value)} style={styles.input} /></Campo>
+                  <Campo label="Data final"><input type="date" value={relatorioDataFim} onChange={(e) => setRelatorioDataFim(e.target.value)} style={styles.input} /></Campo>
+                  <Campo label="Execução"><input value="Uma inspeção por período do equipamento" readOnly style={styles.input} /></Campo>
+                  <Campo label="Fotos"><select value={relatorioIncluirFotos ? "SIM" : "NAO"} onChange={(e) => setRelatorioIncluirFotos(e.target.value === "SIM")} style={styles.input}><option value="NAO">Período: mostrar somente links</option><option value="SIM">Período: incluir fotos no PDF</option></select><small style={styles.textoApoio}>Em um único dia, as fotos entram automaticamente.</small></Campo>
+                </div>
+                <Campo label="Buscar equipamento"><input value={relatorioBuscaEquipamento} onChange={(e) => setRelatorioBuscaEquipamento(e.target.value)} placeholder="TAG, área, modelo..." style={styles.input} /></Campo>
+                <div style={styles.botoesLinha}><button onClick={selecionarTodosEquipamentosRelatorio} style={styles.botaoCinza}>Selecionar lista filtrada</button><button onClick={limparSelecaoRelatorio} style={styles.botaoCinza}>Limpar seleção</button><button onClick={gerarRelatorioChecklistPDF} style={styles.botaoPreto}>Gerar relatório PDF</button></div>
+                <p style={styles.textoApoio}>Selecionados: {relatorioTagsSelecionadas.length ? relatorioTagsSelecionadas.join(", ") : "nenhum equipamento selecionado"}</p>
+                <div style={isMobile ? styles.listaEquipamentosMobile : styles.listaEquipamentos}>{equipamentosRelatorioFiltrados.map((e) => { const selecionado = relatorioTagsSelecionadas.includes(e.tag); return <button key={e.tag} onClick={() => alternarEquipamentoRelatorio(e.tag)} style={{ ...styles.cardSelecao, border: selecionado ? "2px solid #111111" : "1px solid #e2e8f0", background: selecionado ? "#fef9c3" : "white" }}><strong style={styles.tagMini}>{e.tag}</strong><span>{e.tipo_equipamento}</span><small>{e.modelo || "Modelo não informado"} | {e.area || "Área não informada"}</small><strong>{selecionado ? "Selecionado" : "Selecionar"}</strong></button>; })}</div>
+              </section>
+            )}
+
+            {filtroAdmin === "CMMS" && (
+              <section style={styles.box}>
+                <h2 style={styles.boxTitulo}>CMMS - importação opcional</h2>
+                <p style={styles.textoApoio}>A integração automática ainda não é necessária. Esta página preserva a importação manual já existente.</p>
+                <div style={isMobile ? styles.gridMobile : styles.grid4}><Card titulo="OS importadas" valor={osCmms.length} /><Card titulo="OS abertas" valor={osCmmsAbertas.length} /><Card titulo="Sem vínculo ativo" valor={osCmmsSemVinculo.length} /><Card titulo="Alertas na frota" valor={tagsComAlertaCmms.size} /></div>
+                <Campo label="Selecionar arquivo exportado do CMMS"><input type="file" accept=".xls,.html,.htm" onChange={importarArquivoCMMS} style={styles.input} /></Campo>
+                {resultadoImportacaoCMMS && <div style={styles.alertaItem}><strong>Última importação: {resultadoImportacaoCMMS.arquivo}</strong><br />Linhas lidas: {resultadoImportacaoCMMS.total}<br />OS importadas/atualizadas: {resultadoImportacaoCMMS.importadas}<br />Vinculadas: {resultadoImportacaoCMMS.vinculadas}<br />Sem vínculo: {resultadoImportacaoCMMS.semVinculo}</div>}
+                <section style={styles.boxInterno}><h3 style={styles.subtituloSecao}>OS abertas / pendentes</h3>{osCmmsAbertas.slice(0, 80).map((os) => { const alerta = classificarAlertaCmms(os); return <div key={`${os.num_os}-${os.tag}`} style={styles.linhaHistorico}><div><strong>{os.tag} — OS {os.num_os}</strong><br />{os.tipo_manut || "Tipo não informado"} | {os.status || "Status não informado"}<br />{os.descricao || os.desc_codigo_parada || "Sem descrição"}</div><span style={alerta.nivel === "CRITICO" ? styles.badgeAtrasado : styles.badgeAguardando}>{alerta.titulo}</span></div>; })}</section>
+              </section>
+            )}
           </>
         )}
       </div>
@@ -3381,6 +3830,79 @@ function Card({ titulo, valor, destaque = false }: { titulo: string; valor: numb
     <div style={{ ...styles.kpiCard, border: destaque ? "1px solid #f59e0b" : "1px solid #e2e8f0" }}>
       <strong>{titulo}</strong>
       <h2 style={{ marginBottom: 0 }}>{valor}</h2>
+    </div>
+  );
+}
+
+function DashboardCard({
+  titulo,
+  valor,
+  subtitulo,
+  cor = "PRETO",
+  onClick,
+}: {
+  titulo: string;
+  valor: number;
+  subtitulo?: string;
+  cor?: "VERDE" | "AMARELO" | "VERMELHO" | "AZUL" | "PRETO";
+  onClick?: () => void;
+}) {
+  const paleta: Record<string, { fundo: string; borda: string; numero: string }> = {
+    VERDE: { fundo: "#f0fdf4", borda: "#86efac", numero: "#166534" },
+    AMARELO: { fundo: "#fffbeb", borda: "#fcd34d", numero: "#92400e" },
+    VERMELHO: { fundo: "#fef2f2", borda: "#fca5a5", numero: "#991b1b" },
+    AZUL: { fundo: "#eff6ff", borda: "#93c5fd", numero: "#1d4ed8" },
+    PRETO: { fundo: "#171717", borda: "#404040", numero: "#FFE600" },
+  };
+  const p = paleta[cor] || paleta.PRETO;
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        ...styles.dashboardKpiCard,
+        background: p.fundo,
+        borderColor: p.borda,
+        cursor: onClick ? "pointer" : "default",
+        color: cor === "PRETO" ? "white" : "#0f172a",
+      }}
+    >
+      <span style={{ ...styles.dashboardKpiNumero, color: p.numero }}>{valor}</span>
+      <strong style={styles.dashboardKpiTitulo}>{titulo}</strong>
+      {subtitulo && <span style={{ ...styles.dashboardKpiSubtitulo, color: cor === "PRETO" ? "#d4d4d4" : "#64748b" }}>{subtitulo}</span>}
+    </button>
+  );
+}
+
+function BarraDashboard({
+  label,
+  valor,
+  total,
+  tipo = "PRETO",
+}: {
+  label: string;
+  valor: number;
+  total: number;
+  tipo?: "VERDE" | "AMARELO" | "VERMELHO" | "AZUL" | "PRETO";
+}) {
+  const cores: Record<string, string> = {
+    VERDE: "#16a34a",
+    AMARELO: "#eab308",
+    VERMELHO: "#dc2626",
+    AZUL: "#2563eb",
+    PRETO: "#171717",
+  };
+  const percentual = Math.max(0, Math.min(100, total > 0 ? (valor / total) * 100 : 0));
+  return (
+    <div style={styles.barraDashboardItem}>
+      <div style={styles.barraDashboardCabecalho}>
+        <strong>{label}</strong>
+        <span>{valor}</span>
+      </div>
+      <div style={styles.barraDashboardTrilho}>
+        <div style={{ ...styles.barraDashboardPreenchimento, width: `${percentual}%`, background: cores[tipo] || cores.PRETO }} />
+      </div>
     </div>
   );
 }
@@ -3499,4 +4021,52 @@ const styles: Record<string, React.CSSProperties> = {
   avisoErro: { background: "#fee2e2", border: "1px solid #fca5a5", color: "#991b1b", padding: 12, borderRadius: 12, marginBottom: 12, fontWeight: 700 },
   msg: { color: "#15803d", fontWeight: 700 },
   msgErro: { color: "#b45309", fontWeight: 700 },
+  headerAdminMobile: { display: "grid", gap: 12, alignItems: "start" },
+  headerAdminLinha: { display: "flex", justifyContent: "space-between", gap: 14, alignItems: "center", flexWrap: "wrap" },
+  adminMenuGrid: { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14 },
+  adminMenuAtivo: { padding: "10px 13px", borderRadius: 12, border: "none", background: "#111111", color: "#FFE600", fontWeight: 900, cursor: "pointer" },
+  adminMenuBotao: { padding: "10px 13px", borderRadius: 12, border: "1px solid #cbd5e1", background: "white", color: "#0f172a", fontWeight: 800, cursor: "pointer" },
+  dashboardTituloLinha: { display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap", marginBottom: 14 },
+  dashboardKpiGridMobile: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 16 },
+  dashboardKpiGrid: { display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12, marginBottom: 16 },
+  dashboardKpiCard: { minHeight: 132, textAlign: "left", display: "grid", alignContent: "start", gap: 5, border: "1px solid #e2e8f0", borderRadius: 18, padding: 16, boxShadow: "0 6px 18px rgba(15,23,42,0.05)" },
+  dashboardKpiNumero: { display: "block", fontSize: 34, lineHeight: 1, fontWeight: 950 },
+  dashboardKpiTitulo: { display: "block", fontSize: 15 },
+  dashboardKpiSubtitulo: { display: "block", fontSize: 12, lineHeight: 1.35 },
+  dashboardDuasColunas: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 14, marginBottom: 16 },
+  dashboardTresColunas: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 14, marginBottom: 16 },
+  estadoVazio: { padding: 18, background: "#f8fafc", border: "1px dashed #cbd5e1", borderRadius: 14, color: "#64748b", textAlign: "center" },
+  problemaPersistente: { background: "#fff7ed", border: "1px solid #fdba74", borderLeft: "5px solid #f97316", padding: 14, borderRadius: 14, marginBottom: 10 },
+  problemaCabecalho: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 7 },
+  numeroDestaque: { display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 28, height: 28, padding: "0 8px", borderRadius: 999, background: "#111111", color: "#FFE600", fontWeight: 900 },
+  linhaHojeBotao: { width: "100%", textAlign: "left", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", background: "#f8fafc", border: "1px solid #e2e8f0", padding: 12, borderRadius: 12, cursor: "pointer", color: "#0f172a" },
+  miniGraficoColunas: { display: "grid", gridTemplateColumns: "repeat(8, minmax(38px, 1fr))", gap: 7, alignItems: "end", minHeight: 150, overflowX: "auto", paddingTop: 8 },
+  miniGraficoItem: { display: "grid", justifyItems: "center", gap: 5, minWidth: 38 },
+  miniGraficoValor: { fontSize: 11, fontWeight: 900, color: "#334155" },
+  miniGraficoBarra: { width: "100%", minHeight: 4, background: "#111111", borderRadius: "7px 7px 3px 3px" },
+  miniGraficoBarraAmarela: { width: "100%", minHeight: 4, background: "#FFE600", border: "1px solid #eab308", borderRadius: "7px 7px 3px 3px" },
+  planoCard: { background: "white", border: "1px solid #e2e8f0", borderLeft: "5px solid #FFE600", borderRadius: 16, padding: 14, marginBottom: 10 },
+  planoCabecalho: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" },
+  regraRecalculoLinha: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 10, paddingTop: 10, borderTop: "1px solid #e2e8f0" },
+  inputCompacto: { padding: "7px 9px", borderRadius: 9, border: "1px solid #cbd5e1", fontSize: 12, background: "white" },
+  planoDetalhes: { marginTop: 12, padding: 12, borderRadius: 12, background: "#f8fafc", border: "1px solid #e2e8f0", overflowX: "auto" },
+  legendaMapa: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", margin: "12px 0" },
+  mapaProgramado: { display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 28, height: 28, borderRadius: 7, background: "#dbeafe", color: "#1d4ed8", fontWeight: 900, border: "1px solid #93c5fd" },
+  mapaExecutado: { display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 28, height: 28, borderRadius: 7, background: "#dcfce7", color: "#166534", fontWeight: 900, border: "1px solid #86efac" },
+  mapaAtrasado: { display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 28, height: 28, borderRadius: 7, background: "#fee2e2", color: "#991b1b", fontWeight: 900, border: "1px solid #fca5a5" },
+  mapaCancelado: { display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 28, height: 28, borderRadius: 7, background: "#e2e8f0", color: "#64748b", fontWeight: 900, border: "1px solid #cbd5e1" },
+  mapaScroll: { width: "100%", overflowX: "auto", border: "1px solid #e2e8f0", borderRadius: 14 },
+  mapaTabela: { borderCollapse: "separate", borderSpacing: 0, minWidth: 2700, width: "100%", fontSize: 11 },
+  mapaCabecalhoFixo: { position: "sticky", left: 0, zIndex: 4, background: "#111111", color: "#FFE600", minWidth: 170, padding: 8, borderRight: "2px solid #64748b", borderBottom: "1px solid #475569", textAlign: "left" },
+  mapaTh: { background: "#111111", color: "#FFE600", minWidth: 43, padding: 7, borderBottom: "1px solid #475569", textAlign: "center", position: "sticky", top: 0, zIndex: 2 },
+  mapaTdFixo: { position: "sticky", left: 0, zIndex: 3, background: "white", minWidth: 170, padding: 8, borderRight: "2px solid #e2e8f0", borderBottom: "1px solid #e2e8f0", fontWeight: 800 },
+  mapaTd: { minWidth: 43, height: 39, padding: 4, textAlign: "center", borderBottom: "1px solid #e2e8f0", borderRight: "1px solid #f1f5f9" },
+  linhaHistorico: { display: "grid", gridTemplateColumns: "1fr auto", gap: 10, alignItems: "center", background: "#f8fafc", border: "1px solid #e2e8f0", padding: 12, borderRadius: 12, marginBottom: 8 },
+  barraDashboardItem: { display: "grid", gap: 5, marginBottom: 11 },
+  barraDashboardCabecalho: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, fontSize: 13 },
+  barraDashboardTrilho: { height: 10, background: "#e2e8f0", borderRadius: 999, overflow: "hidden" },
+  barraDashboardPreenchimento: { height: "100%", borderRadius: 999, minWidth: 2 },
+  tabela: { width: "100%", borderCollapse: "collapse", fontSize: 12, marginTop: 10 },
+  th: { background: "#111111", color: "#FFE600", padding: 8, textAlign: "left", borderBottom: "1px solid #475569" },
+  td: { padding: 8, borderBottom: "1px solid #e2e8f0", verticalAlign: "top" },
 };
